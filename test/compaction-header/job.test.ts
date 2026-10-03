@@ -12,6 +12,15 @@ const input = () => ({ cutId: "cut-a", instructions: "For this PR only.",
   engineMessages: [{ role: "user" as const, text: raw.content, handle: "h1" }],
 });
 describe("daemon compaction header job", () => {
+  it("keeps every human message when the document overflows, without classifier-based removal", () => {
+    const source = input();
+    source.originals[0].text = "Initial request " + "x".repeat(5000);
+    source.originals.push({ id: 2, seq: 1, role: "user", origin: "user", text: "Leave production untouched." });
+    const document = renderCompactionDocument(prepareHeaderJob(source), workingHeader(), { targetBytes: 1 });
+    expect(document.text).toContain("Leave production untouched.");
+    expect(document.overflowBytes).toBeGreaterThan(1);
+    expect(document.elidedExcerptIds).not.toContain(2);
+  });
   it("renders common extraction rules with excerpts, scope and addressed complete-window/tail evidence", () => {
     const job = prepareHeaderJob(input());
     expect(job.completePrompt).toContain("[excerpt:u1]");
@@ -43,9 +52,9 @@ describe("daemon compaction header job", () => {
     const job = prepareHeaderJob(source);
     const document = renderCompactionDocument(job, workingHeader(), { targetBytes: 500 });
     expect(document.omittedSummaryIds).toEqual(["sum_old", "sum_new"]);
-    expect(document.text).toContain(source.originals[0].text);
+    expect(document.text).toContain("[middle elided from [raw:cut-a:1]]");
     expect(document.text).toContain("## Engine tail");
-    expect(document.overflowBytes).toBeGreaterThan(5000);
+    expect(document.overflowBytes).toBe(document.bytes - document.targetBytes);
     expect(document.bytes).toBeGreaterThan(document.targetBytes);
   });
   it("refuses tail text or handles that conflict with the frozen engine input", () => {
@@ -58,6 +67,6 @@ describe("daemon compaction header job", () => {
     source.window[0].content = "s".repeat(12000);
     const job = prepareHeaderJob(source), document = renderCompactionDocument(job, workingHeader(), { targetBytes: 12000 });
     expect(document.omittedSummaryIds).toEqual(["sum_old"]);
-    expect(document.text).toContain(source.originals[1].text);
+    expect(document.text).toContain("[middle elided from [raw:cut-a:2]]");
   });
 });

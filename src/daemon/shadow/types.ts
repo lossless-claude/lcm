@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ContextCoverage, ContextWindowItem } from "../../store/summary-store.js";
 import { validCompactionHeader, type CompactionHeader } from "../../../hooks/compaction-header-schema.js";
+import type { HeaderCitations } from "../../../hooks/header-citations.js";
 export { validModelName } from "../../../hooks/compaction-header-schema.js";
 
 export const HTTP = { ok: 200, badRequest: 400, notFound: 404, conflict: 409, gone: 410, unprocessable: 422, minimum: 100, maximum: 599 } as const;
@@ -11,7 +12,7 @@ export type ShadowHeader = { version: 1 } & Record<typeof HEADER_SECTIONS[number
 export type StoredShadowHeader = ShadowHeader | CompactionHeader;
 export type ShadowUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
 export type ShadowMessage = { role: "user" | "assistant"; text: string; handle?: string };
-export type ShadowOriginal = { id: number; seq: number; role: string; text: string; uuid?: string; origin: "user" | "other" | "unknown" };
+export type ShadowOriginal = { id: number; seq: number; role: string; text: string; uuid?: string; origin: "user" | "other" | "unknown"; isMeta?: boolean };
 export type ShadowSnapshot = {
   version: 1; originals: ShadowOriginal[]; engineMessages: ShadowMessage[];
   window: { text: string; coverage: ContextCoverage; items?: ContextWindowItem[] };
@@ -36,6 +37,7 @@ export type ArmRecord = {
   usageAttempts: { usage: ShadowUsage; failed: boolean; model: string }[];
   status?: number | null; errorKind?: string;
   options?: { maxTokens?: number; effort?: string };
+  citations?: HeaderCitations;
 };
 export const digest = (text: string): string => createHash("sha256").update(text).digest("hex");
 export const objectHash = (value: unknown): string => digest(JSON.stringify(value));

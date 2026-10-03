@@ -49,7 +49,7 @@ function hashPaths(root, paths) {
 const SOURCE_DIRS = ["src", "bin", "installer"];
 const SOURCE_FILES = ["tsconfig.json"];
 // Node consumers and the sandbox share this schema; it is also a tsc input.
-const SHARED_HOOK_FILES = ["hooks/compaction-header-schema.ts"];
+const SHARED_HOOK_FILES = ["hooks/compaction-header-schema.ts", "hooks/header-citations.ts"];
 
 /** Fingerprint of the emitted JavaScript: what this build *is*. */
 export function computeBuildId(distDir) {

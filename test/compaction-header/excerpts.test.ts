@@ -4,6 +4,31 @@ import type { ShadowOriginal } from "../../src/daemon/shadow/types.js";
 
 const user = (id: number, text: string): ShadowOriginal => ({ id, seq: id, role: "user", origin: "user", text });
 describe("compaction user excerpts", () => {
+  it.each(["Caveat: never publish this branch.", "Base directory for this skill needs changing.", "This session is being continued deliberately."])("keeps human prose regardless of its first words (%s)", text => {
+    expect(assembleExcerpts([user(1, text)], "cut-a").excerpts[0]?.text).toBe(text);
+  });
+  it("uses structural metadata and tags to exclude generated rows", () => {
+    const rows = [{ ...user(1, "not human"), isMeta: true }, user(2, "<local-command-stdout>generated</local-command-stdout>"),
+      user(3, "<task-notification>generated</task-notification>"), user(4, "Caveat: leave production untouched.")];
+    expect(assembleExcerpts(rows, "cut-a").excerpts.map(row => row.rawMessageId)).toEqual([4]);
+  });
+  it("retains every human message even when an instruction has no classifier keyword", () => {
+    const originals = [user(1, "Initial request " + "x".repeat(5000)), user(2, "Leave production untouched.")];
+    const selected = assembleExcerpts(originals, "cut-a", { messageTargetBytes: 4096 });
+    expect(selected.excerpts.map(row => row.rawMessageId)).toEqual([1, 2]);
+    expect(selected.excerpts[1].text).toBe("Leave production untouched.");
+  });
+  it("middle-elides an oversized message with a raw-row marker and exact Unicode head/tail", () => {
+    const text = "HEAD🙂 " + "middle🙂 ".repeat(100) + " TAIL🙂";
+    const selected = assembleExcerpts([user(7, text)], "cut-a", { messageTargetBytes: 160 });
+    const excerpt = selected.excerpts[0];
+    expect(excerpt.text.startsWith("HEAD🙂 ")).toBe(true);
+    expect(excerpt.text.endsWith(" TAIL🙂")).toBe(true);
+    expect(excerpt.text).toContain("[middle elided from [raw:cut-a:7]]");
+    expect(excerpt.text).not.toContain(text);
+    expect(selected.elidedIds).toEqual([7]);
+    expect(checkExcerpts(selected.excerpts, [user(7, text)], "cut-a")).toEqual([]);
+  });
   it("keeps human text exactly and preserves slash-command arguments while omitting generated rows", () => {
     const originals = [user(1, "  Build the parser.\nKeep the spacing.  "),
       { ...user(2, "assistant proposal"), role: "assistant" },
@@ -15,21 +40,19 @@ describe("compaction user excerpts", () => {
       { id: "u5", rawMessageId: 5, text: "/review\n  Check #42\nwith care.  ", spans: ["/review", "  Check #42\nwith care.  "], sources: ["[raw:cut-a:5]"] },
     ]);
   });
-  it("always keeps the first request and directive-like messages above the byte target", () => {
+  it("keeps every human row while marking only middle-elided messages", () => {
     const originals = [user(1, "Initial question?"), user(2, "Never publish " + "x".repeat(5000)),
       user(3, "old chatter"), user(4, "latest chatter")];
-    const selected = assembleExcerpts(originals, "cut-a", { targetBytes: 1 });
-    expect(selected.excerpts.map(row => row.rawMessageId)).toEqual([1, 2]);
-    expect(selected.excerpts[1].text).toBe(originals[1].text);
-    expect(selected.omittedIds).toEqual([3, 4]);
-    expect(selected.overflowBytes).toBeGreaterThan(5000);
+    const selected = assembleExcerpts(originals, "cut-a", { messageTargetBytes: 4096 });
+    expect(selected.excerpts.map(row => row.rawMessageId)).toEqual([1, 2, 3, 4]);
+    expect(selected.excerpts[1].text).toContain("[middle elided from [raw:cut-a:2]]");
+    expect(selected.elidedIds).toEqual([2]);
   });
-  it("trims older non-directive messages before the latest ones, retaining chronological order", () => {
+  it("keeps short human messages in chronological order without aggregate trimming", () => {
     const originals = [user(1, "initial?"), user(2, "a".repeat(500)), user(3, "b".repeat(500)), user(4, "recent?")];
-    const selected = assembleExcerpts(originals, "cut-a", { targetBytes: 250 });
-    expect(selected.excerpts.map(row => row.rawMessageId)).toEqual([1, 4]);
-    expect(selected.omittedIds).toEqual([2, 3]);
-    expect(selected.overflowBytes).toBe(0);
+    const selected = assembleExcerpts(originals, "cut-a", { messageTargetBytes: 4096 });
+    expect(selected.excerpts.map(row => row.rawMessageId)).toEqual([1, 2, 3, 4]);
+    expect(selected.elidedIds).toEqual([]);
   });
   it("checks excerpt wording against the exact human spans, including slash arguments", () => {
     const originals = [user(1, "Never publish without asking."), user(2, "<command-name>/review</command-name><command-args>  Carefully.  </command-args>")];
@@ -43,7 +66,7 @@ describe("compaction user excerpts", () => {
     expect(assembleExcerpts([user(1, text)], "cut-a").excerpts).toEqual([]);
   });
   it.each(["Don’t publish this patch.", "I authorize deployment.", "<command-name>  /review</command-name><command-args>details</command-args>"])("protects directive or permission wording without a hard size cap (%s)", text => {
-    const selected = assembleExcerpts([user(1, "first question?"), user(2, text)], "cut-a", { targetBytes: 0 });
+    const selected = assembleExcerpts([user(1, "first question?"), user(2, text)], "cut-a", { messageTargetBytes: 4096 });
     expect(selected.excerpts.map(row => row.rawMessageId)).toEqual([1, 2]);
   });
 });

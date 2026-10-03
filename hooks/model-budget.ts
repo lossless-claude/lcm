@@ -33,7 +33,7 @@ export class SessionOutputBudget {
   }
   snapshot() {
     return { spent: this.spent, reserved: this.reserved, unbounded: this.unbounded, usageUnknown: this.usageUnknown,
-      available: this.usageUnknown ? 0 : Math.max(0, this.cap - this.spent - this.reserved), overshoot: Math.max(0, this.spent - this.cap) };
+      available: Math.max(0, this.cap - this.spent - this.reserved), overshoot: Math.max(0, this.spent - this.cap) };
   }
   private changed(): Promise<void> { return new Promise(resolve => this.waiters.push(resolve)); }
   private lease(allowance: number, maxTokens?: number): BudgetLease {
@@ -48,8 +48,9 @@ export class SessionOutputBudget {
   private finish({ allowance, maxTokens }: { allowance: number; maxTokens?: number }, { output, usageUnknown }: { output: number | null; usageUnknown: boolean }): void {
     if (maxTokens === undefined) this.unbounded = false;
     else this.reserved -= allowance;
-    this.usageUnknown ||= usageUnknown || output === null;
-    if (output !== null) this.spent += output;
+    const unknown = usageUnknown || output === null;
+    this.usageUnknown ||= unknown;
+    this.spent += unknown ? Math.max(allowance, output ?? 0) : output!;
     const waiters = this.waiters; this.waiters = [];
     waiters.forEach(resolve => resolve());
   }

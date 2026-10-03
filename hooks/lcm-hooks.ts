@@ -422,7 +422,7 @@ type UsageAttempt = {
   /** Whether this call failed to provide a usable answer. */
   failed?: boolean;
 };
-type SummaryFailure = Error & { usageAttempts?: UsageAttempt[] };
+type SummaryFailure = Error & { usageAttempts?: UsageAttempt[]; usageUnknown?: boolean };
 const DEFAULT_SUMMARY_OUTPUT_CAP = 50_000;
 /** The engine's own estimate ratio; used only when the host reports no usage. */
 const CHARS_PER_TOKEN = 4;
@@ -513,6 +513,7 @@ function failedSummaryFallback(error: unknown, attempt: UsageAttempt | undefined
   if (!attempt) return error;
   const failure = (error instanceof Error ? error : new Error(String(error))) as SummaryFailure;
   if (malformed) failure.message = `model.fork: answer text was not a string; fallback: ${failure.message}`;
+  failure.usageUnknown ||= !failure.usageAttempts?.length;
   failure.usageAttempts = [attempt, ...(failure.usageAttempts ?? [])];
   return failure;
 }
@@ -632,9 +633,8 @@ async function serveSummaryJob(
     answer = workerModel ? await completeSummary($, job, lease.allowance, workerModel)
       : await answerSummary($, job, lease.allowance);
   } catch (error) {
-    const attempts = (error as SummaryFailure)?.usageAttempts ?? [];
-    const used = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
-    lease.settle(used);
+    const { attempts, used, unknown } = failedSummaryAccounting(error);
+    lease.settle(used, unknown);
     const overshot = budget.snapshot().overshoot > 0;
     await postSummaryAnswer($, job, route, { error: overshot ? "spend cap" : error instanceof Error ? error.message : String(error),
       ...(attempts.length ? { usageAttempts: attempts } : {}) });
@@ -657,6 +657,13 @@ async function serveSummaryJob(
   const { priorUsage, ...body } = answer;
   await postSummaryAnswer($, job, route, priorUsage ? { ...body, usageAttempts: priorUsage } : body);
   return totalOutput;
+}
+function failedSummaryAccounting(error: unknown): { attempts: UsageAttempt[]; used: number; unknown: boolean } {
+  const failure = error as SummaryFailure;
+  const attempts = failure?.usageAttempts ?? [];
+  const known = attempts.filter(attempt => Number.isSafeInteger(attempt.usage.output_tokens) && attempt.usage.output_tokens >= 0);
+  return { attempts, used: known.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0),
+    unknown: Boolean(failure?.usageUnknown) || attempts.length === 0 || known.length !== attempts.length };
 }
 
 /** One request at a time also serializes jobs from concurrent daemon compactions. */

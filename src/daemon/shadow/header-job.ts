@@ -1,11 +1,12 @@
-import { COMPACTION_HEADER_SECTIONS, compactionHeaderItems, validCompactionHeader, type CompactionHeader, type HeaderSource } from "../../../hooks/compaction-header-schema.js";
-import { assembleExcerpts, checkExcerpts, fitExcerpts, renderExcerpts, type UserExcerpt } from "../../compaction-header/excerpts.js";
+import { COMPACTION_HEADER_SECTIONS, validCompactionHeader, type CompactionHeader, type HeaderSource } from "../../../hooks/compaction-header-schema.js";
+import { assembleExcerpts, checkExcerpts, renderExcerpts, type UserExcerpt } from "../../compaction-header/excerpts.js";
 import { renderTemplate } from "../../prompts/loader.js";
 import { fenceContent } from "../content-fence.js";
 import { verifyNativeTail } from "./tail.js";
 import { objectHash } from "./types.js";
 import type { ContextWindowItem } from "../../store/summary-store.js";
 import type { ShadowMessage, ShadowOriginal } from "./types.js";
+import type { CitationEvidence } from "../../../hooks/header-citations.js";
 
 export type HeaderJobInput = { cutId: string; instructions: string; originals: readonly ShadowOriginal[]; window: readonly ContextWindowItem[]; tail: readonly ShadowMessage[]; engineMessages: readonly ShadowMessage[] };
 export const HEADER_WORD_TARGET = 750;
@@ -13,11 +14,12 @@ export const DOCUMENT_BYTE_TARGET = 65_536;
 export type PreparedHeaderJob = {
   version: 1; cutId: string; excerpts: UserExcerpt[]; window: ContextWindowItem[]; tail: ShadowMessage[];
   forkPrompt: string; completePrompt: string; promptHash: string; forkPromptHash: string; inputHash: string;
-  excerptOverflowBytes: number; omittedExcerptIds: number[];
+  elidedExcerptIds: number[];
+  evidence: CitationEvidence;
 };
-export function prepareHeaderJob(input: HeaderJobInput, { excerptTargetBytes = 4096 } = {}): PreparedHeaderJob {
+export function prepareHeaderJob(input: HeaderJobInput, { messageTargetBytes = 4096 } = {}): PreparedHeaderJob {
   verifyNativeTail(input.tail, input.engineMessages, text => text);
-  const selection = assembleExcerpts(input.originals, input.cutId, { targetBytes: Number.MAX_SAFE_INTEGER });
+  const selection = assembleExcerpts(input.originals, input.cutId, { messageTargetBytes });
   if (checkExcerpts(selection.excerpts, input.originals, input.cutId).length) throw new Error("Non-verbatim excerpt");
   const window = input.window.map(row => ({ ...row })).sort((a, b) => a.ordinal - b.ordinal);
   const tail = input.tail.map(row => ({ ...row }));
@@ -26,7 +28,11 @@ export function prepareHeaderJob(input: HeaderJobInput, { excerptTargetBytes = 4
   const completePrompt = prompt(evidence), forkPrompt = prompt({ ...shared, transcript: "Use your existing fork prefix; no digested window is supplied." });
   return { version: 1, cutId: input.cutId, excerpts: selection.excerpts, window, tail, completePrompt, forkPrompt,
     inputHash: objectHash(evidence), promptHash: objectHash(completePrompt), forkPromptHash: objectHash(forkPrompt),
-    excerptOverflowBytes: Math.max(0, selection.bytes - excerptTargetBytes), omittedExcerptIds: selection.omittedIds };
+    elidedExcerptIds: selection.elidedIds, evidence: headerCitationEvidence(input.cutId, input.originals, input.window) };
+}
+export function headerCitationEvidence(cutId: string, originals: readonly ShadowOriginal[], window: readonly ContextWindowItem[]): CitationEvidence {
+  return { cutId, originals: originals.map(row => ({ id: row.id, text: row.text })), excerpts: assembleExcerpts(originals, cutId).excerpts.map(row => ({ id: row.id, rawMessageId: row.rawMessageId })),
+    summaries: window.filter(row => row.itemType === "summary").map(row => row.summaryId!) };
 }
 function prompt(evidence: unknown): string {
   return renderTemplate("compaction-header", { word_target: String(HEADER_WORD_TARGET), evidence: fenceContent(JSON.stringify(evidence), "compaction-evidence") });
@@ -61,12 +67,7 @@ export function renderCompactionDocument(job: PreparedHeaderJob, header: Compact
     window = window.filter(item => item !== row);
     text = documentText(job, rendered, { window });
   }
-  const bodyBytes = Buffer.byteLength(documentText(job, rendered, { window, excerpts: [] }), "utf8") - Buffer.byteLength(renderExcerpts([]), "utf8");
-  const references = compactionHeaderItems(header).flatMap(item => [...item.sources, ...("supersedes" in item ? item.supersedes ?? [] : [])]).filter((source): source is string => typeof source === "string");
-  const preservedIds = references.flatMap(source => /^\[excerpt:([A-Za-z0-9_-]+)\]$/.exec(source)?.[1] ?? []);
-  const selection = fitExcerpts(job.excerpts, { targetBytes: Math.max(0, targetBytes - bodyBytes), preservedIds });
-  text = documentText(job, rendered, { window, excerpts: selection.excerpts });
   const bytes = Buffer.byteLength(text, "utf8");
-  return { cutId: job.cutId, text, bytes, targetBytes, overflowBytes: Math.max(0, bytes - targetBytes), omittedSummaryIds, omittedExcerptIds: selection.omittedIds,
+  return { cutId: job.cutId, text, bytes, targetBytes, overflowBytes: Math.max(0, bytes - targetBytes), omittedSummaryIds, elidedExcerptIds: job.elidedExcerptIds,
     headerWords: rendered.split(/\s+/).filter(Boolean).length, headerWordTarget: HEADER_WORD_TARGET };
 }

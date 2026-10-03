@@ -7,6 +7,9 @@ concurrency require verification in the engine.
 
 See [compaction header jobs](compaction-header.md) for the document, version-2
 schema and executor rules. The library installs no compaction hook.
+Version-2 arms persist per-item citation resolution without changing shadow
+`answered` outcomes; the live acceptance predicate refuses missing or ambiguous
+references. Human messages are never removed from excerpts by a classifier.
 
 ## Admission and storage
 

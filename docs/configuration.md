@@ -109,6 +109,10 @@ spending across poller restarts. Complete requests reserve allowances; uncapped
 fork overshoot and unknown usage remain explicit. Document/header sizes are
 targets and instruction overflow is measured. See
 [compaction header jobs](design/compaction-header.md).
+Every human message remains in excerpts; oversized messages have a raw-row
+middle-elision marker. Arm records include production-time citation resolution.
+Unknown model usage consumes the full shared reservation rather than restoring
+allowance, while retaining the `usageUnknown` flag.
 
 `bench-corpora.json` is optional for shadow admission: a valid existing exclusion
 skips a project's cuts before Capture; missing or invalid policy does not disable

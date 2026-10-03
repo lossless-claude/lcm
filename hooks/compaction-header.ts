@@ -1,9 +1,10 @@
 import type { EngineInterface } from "claude-code";
 import type { SessionOutputBudget } from "./model-budget.js";
 import { validCompactionHeader, validModelName, type CompactionHeader } from "./compaction-header-schema.js";
+import { freezeCitationEvidence, resolveHeaderCitations, type CitationEvidence, type HeaderCitations } from "./header-citations.js";
 
 type HeaderEngine = { session: Pick<EngineInterface["session"], "model">; model: Pick<EngineInterface["model"], "fork" | "complete"> };
-export type HeaderCall = { prompt: string; inputHash: string; promptHash: string; maxTokens?: number };
+export type HeaderCall = { prompt: string; inputHash: string; promptHash: string; maxTokens?: number; evidence?: CitationEvidence };
 const CAPTURED_MODEL = Symbol("session model at cut");
 export type SessionModelAtCut = { readonly id: string; readonly [CAPTURED_MODEL]: true };
 export type HeaderUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
@@ -13,6 +14,7 @@ type OutcomeMetadata = {
   arm: Arm; requestedModel: string; usage: HeaderUsage | null; inputHash: string | null; promptHash: string | null;
   durationMs: number; queueMs: number; options?: { maxTokens: number }; status?: number | null; errorKind?: string;
   budget?: ReturnType<SessionOutputBudget["snapshot"]>;
+  citations?: HeaderCitations;
 };
 export type HeaderOutcome = OutcomeMetadata & ({ outcome: "answered"; text: string; header: CompactionHeader } | { outcome: HeaderFailure; text: string; header: null });
 type ExecutionContext = { model: SessionModelAtCut; budget: SessionOutputBudget };
@@ -52,7 +54,7 @@ function answered(call: CallContext, text: string, usage: HeaderUsage): HeaderOu
   try { header = JSON.parse(text); }
   catch { return { ...failure(call, "invalid-output", usage), text }; }
   if (!validCompactionHeader(header)) return { ...failure(call, "invalid-output", usage), text };
-  return { ...metadata(call, usage), outcome: "answered", text, header };
+  return { ...metadata(call, usage), outcome: "answered", text, header, citations: resolveHeaderCitations(header, call.job?.evidence) };
 }
 function classifyResult(result: unknown, call: CallContext): HeaderOutcome {
   if (!object(result)) return failure(call, "unconfirmed");
@@ -78,7 +80,7 @@ function outputAccounting(results: readonly HeaderOutcome[]): { known: number; u
     unknown: results.some(row => row.usage === null && row.outcome !== "nothing-to-fork") };
 }
 export async function executeHeaderFork($: HeaderEngine, job: HeaderCall, { model, budget }: ExecutionContext): Promise<HeaderOutcome> {
-  const now = Date.now(), fixed = { ...job }, call: CallContext = { arm: "A", model: model.id, job: fixed, queuedAt: now, startedAt: now };
+  const now = Date.now(), fixed = { ...job, evidence: freezeCitationEvidence(job.evidence) }, call: CallContext = { arm: "A", model: model.id, job: fixed, queuedAt: now, startedAt: now };
   const lease = budget.reserveFork();
   if (!lease) return { ...failure(call, budget.snapshot().available ? "unavailable" : "spend-cap"), budget: budget.snapshot() };
   let result: unknown;
@@ -101,7 +103,7 @@ function unavailablePair(model: SessionModelAtCut, queuedAt: number, { job, outc
 export async function executeHeaderPair($: HeaderEngine, ready: Promise<HeaderCall>, { model, budget }: ExecutionContext): Promise<{ B: HeaderOutcome; C: HeaderOutcome }> {
   const queuedAt = Date.now();
   let job: HeaderCall;
-  try { job = Object.freeze({ ...await ready }); }
+  try { const input = await ready; job = Object.freeze({ ...input, evidence: freezeCitationEvidence(input.evidence) }); }
   catch { return unavailablePair(model, queuedAt); }
   const requested = job.maxTokens ?? DEFAULT_HEADER_MAX_TOKENS;
   if (!Number.isSafeInteger(requested) || requested <= 0 || requested > MAX_COMPLETION_TOKENS) return unavailablePair(model, queuedAt, { job });

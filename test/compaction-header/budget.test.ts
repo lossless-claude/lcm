@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { sessionOutputBudget } from "../../hooks/model-budget.js";
 
 describe("session model output budget", () => {
+  it("spends an unknown lease at its reservation while preserving other concurrent allowances", async () => {
+    const budget = sessionOutputBudget({}, "concurrent", 20);
+    const failed = await budget.reserveComplete(6), other = await budget.reserveComplete(5);
+    failed!.settle(null);
+    expect(budget.snapshot()).toMatchObject({ usageUnknown: true, spent: 6, reserved: 5, available: 9 });
+    other!.settle(2);
+    expect(budget.snapshot()).toMatchObject({ spent: 8, reserved: 0, available: 12 });
+    expect((await budget.reserveComplete(100))!.maxTokens).toBe(12);
+  });
   it("reserves allowance and charges actual output, releasing unused tokens", async () => {
     const budget = sessionOutputBudget({}, "session-a", 10);
     const lease = await budget.reserveComplete(8);
@@ -45,11 +54,11 @@ describe("session model output budget", () => {
     expect(sessionOutputBudget(owner, "b", 10).snapshot().spent).toBe(0);
     expect(sessionOutputBudget({}, "a", 10).snapshot().spent).toBe(0);
   });
-  it("keeps unavailable usage unknown and closes further admission", async () => {
+  it("charges unavailable usage conservatively while allowing only the remaining budget", async () => {
     const budget = sessionOutputBudget({}, "a", 10);
     (await budget.reserveComplete(4))!.settle(null);
-    expect(budget.snapshot()).toMatchObject({ usageUnknown: true, spent: 0, available: 0 });
-    expect(await budget.reserveComplete(1)).toBeNull();
+    expect(budget.snapshot()).toMatchObject({ usageUnknown: true, spent: 4, available: 6 });
+    expect((await budget.reserveComplete(1))!.maxTokens).toBe(1);
     expect(budget.reserveFork()).toBeNull();
   });
   it.each([0, 1])("refuses a pair when the shared cap is %i without spending", async cap => {

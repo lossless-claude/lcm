@@ -84,6 +84,15 @@ describe("daemon compaction shadow artifacts", () => {
     expect(artifact("arm-A-first.json").header).toMatchObject({ version: 2, intent: [{ text: "[REDACTED]" }],
       instructionsInForce: [{ sources: ["[excerpt:u1]"] }], taskState: [{ status: "in progress", provenance: "authorized by the user" }] });
   });
+  it("persists authoritative per-item citation resolution without downgrading shadow answers", async () => {
+    const cut = await start(), header = workingHeader(); header.intent[0].sources = ["[excerpt:missing]"];
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, outcome: "answered", header,
+      citations: { version: 1, items: [] } } })).status).toBe(200);
+    const stored = artifact("arm-A-first.json");
+    expect(stored.outcome).toBe("answered");
+    expect(stored.citations.items.find((item: any) => item.section === "intent").status).toBe("missing");
+    expect(stored.citations.items.find((item: any) => item.section === "instructionsInForce").status).toBe("resolved");
+  });
   it("records unknown hashes only for an unavailable header input", async () => {
     const cut = await start(), record = { ...arm(cut).record, outcome: "unavailable", inputHash: null, promptHash: null };
     expect((await post("arm", { ...arm(cut), record })).status).toBe(200);

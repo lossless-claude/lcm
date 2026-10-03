@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { headerExecutor } from "../../hooks/compaction-header.js";
 import { sessionOutputBudget } from "../../hooks/model-budget.js";
 import { workingHeader } from "./fixtures.js";
+import { allCitationsResolved } from "../../hooks/header-citations.js";
 
 const usage = { input_tokens: 12, output_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 7 };
 const completeJob = { prompt: "window and tail", inputHash: "a".repeat(64), promptHash: "b".repeat(64), maxTokens: 4096 };
@@ -13,6 +14,29 @@ function engine() {
   } };
 }
 describe("three-arm header executor", () => {
+  it.each(["missing excerpt", "foreign raw", "ambiguous quote", "resolved"])("resolves %s citations when an answered header is produced", async kind => {
+    const $ = engine(), model = await headerExecutor.captureModel($), budget = sessionOutputBudget($.session, "a", 30);
+    const header = workingHeader();
+    const evidence = { cutId: "cut-a", originals: [{ id: 1, text: "Run npm test" }], excerpts: [{ id: "u1", rawMessageId: 1 }], summaries: ["sum_old"] };
+    if (kind === "missing excerpt") header.intent[0].sources = ["[excerpt:missing]"];
+    if (kind === "foreign raw") header.intent[0].sources = ["[raw:other-cut:999]"];
+    if (kind === "ambiguous quote") evidence.originals.push({ id: 2, text: "Run npm test" });
+    $.model.fork.mockResolvedValue({ isAnswered: true, text: JSON.stringify(header), usage });
+    const result = await headerExecutor.fork($, { ...forkJob, evidence }, { model, budget });
+    expect(result.outcome).toBe("answered");
+    const item = result.citations?.items.find(row => row.section === (kind === "ambiguous quote" ? "procedure" : "intent"));
+    expect(item?.status).toBe(kind === "resolved" ? "resolved" : kind === "ambiguous quote" ? "ambiguous" : "missing");
+    expect(allCitationsResolved(result.citations)).toBe(kind === "resolved");
+  });
+  it("captures immutable citation evidence before a delayed fork resolves", async () => {
+    const $ = engine(), model = await headerExecutor.captureModel($), budget = sessionOutputBudget($.session, "a", 30);
+    const evidence = { cutId: "cut-a", originals: [{ id: 1, text: "Run npm test" }], excerpts: [{ id: "u1", rawMessageId: 1 }], summaries: ["sum_old"] };
+    const deferred = Promise.withResolvers<any>(); $.model.fork.mockImplementation(() => deferred.promise);
+    const pending = headerExecutor.fork($, { ...forkJob, evidence }, { model, budget });
+    evidence.originals[0].text = "after-cut replacement";
+    deferred.resolve({ isAnswered: true, text: JSON.stringify(workingHeader()), usage });
+    expect(allCitationsResolved((await pending).citations)).toBe(true);
+  });
   it("captures the session model once and uses it for B while C uses Sonnet with identical input and allowances", async () => {
     const $ = engine(), budget = sessionOutputBudget($.session, "session-a", 30);
     const model = await headerExecutor.captureModel($);
@@ -86,7 +110,7 @@ describe("three-arm header executor", () => {
     const pair = await headerExecutor.pair($, Promise.resolve(completeJob), { model, budget });
     expect(pair.B.outcome).toBe("answered"); expect(pair.C).toMatchObject({ outcome: "unconfirmed", usage: null });
     expect(JSON.stringify(pair)).not.toContain("PRIVATE_PROVIDER_BODY");
-    expect(budget.snapshot()).toMatchObject({ spent: 3, usageUnknown: true, available: 0 });
+    expect(budget.snapshot()).toMatchObject({ spent: 20, usageUnknown: true, available: 0 });
   });
   it("uses the same ledger over two consecutive cuts and refuses calls after exhaustion", async () => {
     const $ = engine(), model = await headerExecutor.captureModel($), budget = sessionOutputBudget($.session, "a", 6);

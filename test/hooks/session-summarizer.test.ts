@@ -54,6 +54,29 @@ function summaryGet(url: string, { jobs, finish }: { jobs: unknown[]; finish: ()
 describe("function-hook session summarizer", () => {
   beforeEach(() => vi.resetModules());
 
+  it("charges an unreported failed completion at its full reservation alongside a concurrent header lease", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 12 }, [{ ...leaf, maxTokens: 4 }]);
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const budget = sharedSessionOutputBudget(sessionId, 12);
+    let headerLease: Awaited<ReturnType<typeof budget.reserveComplete>>;
+    harness.engine.model.complete.mockImplementation(async () => {
+      headerLease = await budget.reserveComplete(3); throw new Error("connection dropped");
+    });
+    await harness.trigger(); await harness.done;
+    expect(budget.snapshot()).toMatchObject({ spent: 4, reserved: 3, available: 5, usageUnknown: true });
+    headerLease!.settle(1);
+    expect((await budget.reserveComplete(100))!.maxTokens).toBe(7);
+  });
+  it("does not mistake known prior fork usage for the usage of a failed fallback", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 12 }, [{ ...leaf, kind: "condensed", maxTokens: 4 }]);
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const budget = sharedSessionOutputBudget(sessionId, 12);
+    harness.engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "api-error", usage: { input_tokens: 1, output_tokens: 1 } });
+    harness.engine.model.complete.mockRejectedValue(new Error("connection dropped"));
+    await harness.trigger(); await harness.done;
+    expect(budget.snapshot()).toMatchObject({ spent: 12, available: 0, usageUnknown: true });
+  });
+
   it("uses a stable module owner even when the header and poller receive different dispatch facades", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 5 });
     const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
