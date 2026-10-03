@@ -2,6 +2,7 @@ import { SUMMARY_SOURCE_IDS_SQL } from "./summary-lineage.js";
 import { TIMELINE_SESSION_ID } from "../db/project-timeline.js";
 import { WorkerStore } from "./worker-store.js";
 import { CommitStore } from "./commit-store.js";
+import { ToolLessonStore } from "../promotion/tool-lessons.js";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -256,6 +257,10 @@ export class ConversationStore {
 
   getSessionCommitReferences(sessionId: string) {
     return new CommitStore(this.db).forSession(sessionId);
+  }
+
+  getToolLessonsForMessages(messageIds: readonly number[]) {
+    return new ToolLessonStore(this.db).forMessages(messageIds);
   }
 
   /** Read-only callers may open a store before its next schema migration. */

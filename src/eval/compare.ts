@@ -9,7 +9,7 @@ import { createSummarizer, resolveSummarizerLanguage } from "../daemon/summarize
 import type { LcmPaths } from "../lcm-paths.js";
 import { ConversationStore } from "../store/conversation-store.js";
 import { compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../compaction.js";
-import { buildSyntheticSession, runEval, type CorpusSession, type EvalRunResult } from "./engine.js";
+import { buildSyntheticSession, runEval, type CorpusSession, type CorpusToolCall, type EvalRunResult } from "./engine.js";
 import { comparisonChunks, renderComparison, type ComparisonReport } from "./report.js";
 
 export type ComparisonOptions = {
@@ -31,9 +31,26 @@ async function readSession(cwd: string, paths: LcmPaths, sessionId: string): Pro
     if (!conversation) throw new Error(`No stored session named "${sessionId}" in this project`);
     const messages = await store.getMessages(conversation.conversationId);
     if (messages.length === 0) throw new Error(`Stored session "${sessionId}" has no messages`);
+    const callsByMessage = new Map<number, CorpusToolCall[]>();
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'transcript_tool_calls'").get()) {
+      const calls = db.prepare(`SELECT t.message_id, t.call_id, t.name, t.input, t.outcome, t.block_reason, t.truncated
+        FROM transcript_tool_calls t JOIN messages m ON m.message_id = t.message_id
+        WHERE m.conversation_id = ? ORDER BY m.seq, t.rowid`).all(conversation.conversationId);
+      for (const row of calls) {
+        const id = Number(row.message_id);
+        const list = callsByMessage.get(id) ?? [];
+        list.push({
+          callId: row.call_id as string, name: row.name as string, input: row.input as string | null,
+          outcome: row.outcome as CorpusToolCall["outcome"], blockReason: row.block_reason as string | null,
+          truncated: Boolean(row.truncated),
+        });
+        callsByMessage.set(id, list);
+      }
+    }
     return { label: sessionId, messages: messages.map((message) => ({
       seq: message.seq, role: message.role, content: message.content,
       tokenCount: message.tokenCount, createdAt: message.createdAt.toISOString(),
+      toolCalls: callsByMessage.get(message.messageId),
     })) };
   } finally {
     db.close();

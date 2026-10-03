@@ -91,6 +91,53 @@ it("matches a full rebuild through adds, resolutions, corrections and removals",
   await assertRebuild();
 });
 
+it("derives a window's pairs and block reasons from the selected messages only", async () => {
+  const messageIds = (...rows: number[]) => rows.map(row =>
+    Number(db.prepare("SELECT message_id FROM transcript_tool_calls WHERE rowid = ?").get(row)!.message_id));
+  const reads = (session: string, count: number) => Array.from({ length: count }, (_, i) =>
+    storedCall(session, `/tmp/${session}-${i}`, "succeeded", { name: "Read" }));
+  const failed = storedCall("one", "npm install widget@1", "failed");
+  const blocked = storedCall("one", "make deploy", "blocked", { reason: "PreToolUse:Bash hook error: deploy 42 is disabled" });
+  const fillers = reads("one", 18);
+  const fixed = storedCall("one", "npm install widget@2", "succeeded");
+  const window = messageIds(failed, blocked, ...fillers, fixed);
+
+  const derived = await lessons.forMessages(window);
+  expect(derived.find(lesson => lesson.kind === "error-fix"))
+    .toMatchObject({ failedCommand: "npm install widget@1", succeededCommand: "npm install widget@2", count: 1 });
+  expect(derived.find(lesson => lesson.kind === "block-reason")?.reason).toBe(maskBlockReason("PreToolUse:Bash hook error: deploy 42 is disabled"));
+  expect(derived.some(lesson => lesson.kind === "environment-rule")).toBe(false);
+
+  // The fix outside the selected messages does not pair.
+  expect((await lessons.forMessages(window.slice(0, -1))).some(lesson => lesson.kind === "error-fix")).toBe(false);
+  // Twenty intervening calls of any tool put the fix outside the 20-call window.
+  const late = storedCall("two", "npm install widget@1", "failed");
+  const lateFillers = reads("two", 20);
+  const lateFix = storedCall("two", "npm install widget@2", "succeeded");
+  expect((await lessons.forMessages(messageIds(late, ...lateFillers, lateFix))).some(lesson => lesson.kind === "error-fix")).toBe(false);
+});
+
+it("keeps distinct blocked command/reason pairs in the window without changing published lessons", async () => {
+  const rows = [
+    storedCall("one", "make deploy", "blocked", { reason: "disabled 42" }),
+    storedCall("one", "make deploy", "blocked", { reason: "disabled 43" }),
+    storedCall("one", "make release", "blocked", { reason: "disabled 44" }),
+    storedCall("one", "make deploy", "blocked", { reason: "permission denied" }),
+  ];
+  const ids = rows.map(row => Number(db.prepare("SELECT message_id FROM transcript_tool_calls WHERE rowid = ?").get(row)!.message_id));
+  const blocked = (await lessons.forMessages(ids)).filter(lesson => lesson.kind === "block-reason");
+  expect(blocked.map(({ command, reason }) => ({ command, reason }))).toEqual([
+    { command: "make deploy", reason: "disabled <id>" },
+    { command: "make release", reason: "disabled <id>" },
+    { command: "make deploy", reason: "permission denied" },
+  ]);
+  await lessons.refresh("project");
+  const published = lessons.list({ kind: "block-reason" });
+  expect(published).toHaveLength(2);
+  expect(published.find(lesson => lesson.reason === "disabled <id>")?.count).toBe(3);
+  for (const lesson of published) expect(lesson).not.toHaveProperty("command");
+});
+
 it("bounds refresh work by changed calls and their pair windows", async () => {
   for (let index = 0; index < 400; index++) {
     storedCall("large-session", "git status", "blocked", { reason: "Blocked: permission" });

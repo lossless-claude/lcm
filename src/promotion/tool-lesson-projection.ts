@@ -9,7 +9,7 @@ function callOrder(call: StoredCall): string {
   return call.seen + String(call.message_id).padStart(16, "0") + String(call.row_id).padStart(16, "0");
 }
 
-function lessonKey(lesson: ToolLesson): string {
+export function lessonKey(lesson: ToolLesson): string {
   return JSON.stringify(lesson.kind === "error-fix"
     ? [lesson.kind, lesson.shape, lesson.failedCommand, lesson.succeededCommand]
     : [lesson.kind, lesson.shape ?? lesson.reason]);

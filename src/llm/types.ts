@@ -1,5 +1,6 @@
 import type { SessionClient } from "../session-client.js";
 import type { SummaryCutDiagnostic } from "./summary-rejection.js";
+import type { ToolSummaryContext } from "../tool-summary-context.js";
 
 export type SummarizerProvider =
   | "claude-process"
@@ -50,6 +51,8 @@ export type SummarizerUsage = {
 };
 
 export type SummarizeContext = {
+  /** Error→fix pairs and block reasons derived from this leaf's source messages. */
+  toolContext?: ToolSummaryContext;
   /** Operator directions supplied with a compaction request. */
   customInstructions?: string;
   /** An expired compaction must not enqueue or publish another attempt. */

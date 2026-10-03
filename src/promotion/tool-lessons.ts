@@ -2,7 +2,7 @@ import { basename } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { SHELL_TOOLS, type ToolOutcome } from "../tool-calls.js";
 import { yieldToEventLoop } from "../daemon/project-queue.js";
-import { BATCH_SIZE, ToolLessonProjection, withLessonTransaction } from "./tool-lesson-projection.js";
+import { BATCH_SIZE, lessonKey, ToolLessonProjection, withLessonTransaction } from "./tool-lesson-projection.js";
 
 const SUBCOMMAND_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "pip", "pip3", "brew", "cargo", "docker", "kubectl", "gh", "lcm"]);
 
@@ -110,6 +110,12 @@ export interface ToolLesson {
   tags: string[];
 }
 
+/** Window-only evidence keeps blocked inputs without changing published lesson keys or data. */
+export type WindowToolLesson = Omit<ToolLesson, "kind"> & (
+  | { kind: "error-fix"; failedCommand: string; succeededCommand: string }
+  | { kind: "block-reason"; command: string; reason: string }
+);
+
 export interface StoredCall {
   row_id: number; session_id: string; message_id: number; name: string;
   input: string | null; outcome: ToolOutcome; block_reason: string | null;
@@ -170,6 +176,43 @@ export const CALL_SELECT = `SELECT t.rowid AS row_id, t.*,
 export class ToolLessonStore {
   private readonly projection: ToolLessonProjection;
   constructor(private readonly db: DatabaseSync) { this.projection = new ToolLessonProjection(db); }
+
+  /** Pairs and block reasons from the selected messages' calls alone; the window is that set, never the project snapshot. */
+  async forMessages(messageIds: readonly number[]): Promise<WindowToolLesson[]> {
+    const ids = [...new Set(messageIds)].sort((a, b) => a - b);
+    const calls: StoredCall[] = [];
+    for (let offset = 0; offset < ids.length; offset += BATCH_SIZE) {
+      const page = ids.slice(offset, offset + BATCH_SIZE);
+      calls.push(...this.db.prepare(CALL_SELECT + ` WHERE t.message_id IN (${page.map(() => "?").join(",")})`)
+        .all(...page) as unknown as StoredCall[]);
+      await yieldToEventLoop();
+    }
+    calls.sort((a, b) => (a.session_id < b.session_id ? -1 : a.session_id > b.session_id ? 1 : 0)
+      || a.message_id - b.message_id || a.row_id - b.row_id);
+    const lessons = new Map<string, WindowToolLesson>();
+    const merge = (lesson: WindowToolLesson, call: StoredCall) => {
+      const key = lesson.kind === "block-reason" ? JSON.stringify([lesson.command, lesson.reason]) : lessonKey(lesson);
+      const existing = lessons.get(key);
+      if (!existing) return lessons.set(key, lesson);
+      observe(existing, call);
+      existing.lastSeen = existing.lastSeen > lesson.lastSeen ? existing.lastSeen : lesson.lastSeen;
+    };
+    calls.forEach((call, index) => {
+      const block = blockLesson(call, "");
+      if (block && call.input !== null) merge({ ...block, kind: "block-reason", command: call.input, reason: block.reason! }, call);
+      const shape = callShape(call);
+      if (!shape || (call.outcome !== "failed" && call.outcome !== "blocked")) return;
+      // Non-shell calls still take positions in the window, as in a project refresh.
+      const window = calls.slice(index + 1, index + 1 + CALL_WINDOW).filter(next => next.session_id === call.session_id);
+      const success = window.find(next => next.outcome === "succeeded" && callShape(next) === shape);
+      if (!success) return;
+      const pair: WindowToolLesson = { ...newLesson("error-fix", call, ""), kind: "error-fix", shape, failedCommand: call.input!, succeededCommand: success.input! };
+      observe(pair, call);
+      pair.lastSeen = pair.lastSeen > success.seen ? pair.lastSeen : success.seen;
+      merge(pair, call);
+    });
+    return [...lessons.values()];
+  }
 
   async refresh(project: string): Promise<number> {
     const state = this.db.prepare("SELECT generation FROM tool_lesson_state WHERE singleton = 1").get() as { generation: number } | undefined;

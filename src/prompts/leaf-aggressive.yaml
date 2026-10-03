@@ -6,6 +6,7 @@ variables:
   - previousContext
   - instructionBlock
   - language
+  - toolContextBlock
 template: |-
   You summarize a SEGMENT of a Claude Code conversation for future model turns.
   Treat this as incremental memory compaction input, not a full-conversation summary.
@@ -33,4 +34,4 @@ template: |-
 
   <conversation_segment>
   {{text}}
-  </conversation_segment>
+  </conversation_segment>{{toolContextBlock}}
