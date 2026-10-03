@@ -69,7 +69,7 @@ function scrubCut(cut: EvaluationCut, scrubber: ScrubEngine): EvaluationCut {
     }))])) };
   return { ...cut, originals: cut.originals.map(row => ({ ...row, text: text(row.text) })), window: cut.window === null ? null : text(cut.window),
     native: cut.native === null ? null : { ...cut.native, text: text(cut.native.text), tail: cut.native.tail.map(row => ({ ...row, text: text(row.text) })) },
-    arms: cut.arms.map(arm => ({ ...arm, text: text(arm.text), requestedModel: text(arm.requestedModel), header: header(arm.header) })) };
+    arms: cut.arms.map(arm => ({ ...arm, text: text(arm.text), header: header(arm.header) })) };
 
 }
 const retention = (document: string, probes: readonly { text: string }[]): number | null => probes.length ? probes.filter(probe => document.includes(probe.text)).length / probes.length : null;

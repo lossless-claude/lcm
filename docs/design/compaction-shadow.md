@@ -36,16 +36,17 @@ arm delivery also takes `arm` and `attempt_id`. Usage retains uncached input, ou
 cache-read and cache-creation counters. Missing usage or cost is unknown, never zero.
 Identical retries are accepted; conflicting results or identities are rejected.
 `requestIdentityHash` binds the raw cwd, cut nonce, session, boundary, model,
-trigger and instruction presence/value before redaction. Only its SHA-256 digest
-is stored beside the scrubbed display fields. A retry cannot change those inputs,
-even when both redact to the same text. Legacy cuts without this digest remain
+trigger and instruction presence/value before redaction. Its SHA-256 digest
+is stored beside the identifiers and scrubbed instructions. A retry cannot change
+those inputs, even when instructions redact to the same text. Legacy cuts without this digest remain
 readable for evaluation and expiry, but admission retries require a new cut nonce.
 Independent files and atomic publication preserve out-of-order completion. Once
 native and all three arms have records, the manifest is complete even when an arm
 reports a non-answer.
 
-Every persisted text field, including frozen windows and historical summary text,
-uses Capture's current global/project scrubbing rules. Scrubbing the shadow copy
+Free text from transcripts, the instructions and model outputs is scrubbed with
+Capture's current global/project rules, including frozen windows and historical
+summary text. Scrubbing the shadow copy
 does not rewrite stored DAG summaries. Engine descriptors
 allow only role, text and opaque handle; arbitrary result objects and media bytes
 are omitted. Correlation identifiers are 1–140 ASCII letters, digits, underscores
@@ -54,7 +55,10 @@ session/cut/boundary/source/attempt identifiers, supersession ids and source poi
 retain their exact values. Source pointers must use `[raw:<cut-id>:<positive-id>]`
 or `[sum:<summary-id>]` with a `sum_` prefix; quoted evidence uses `{ "quote": "..." }`. Caller-supplied
 digests and error kinds retain their stricter shapes and are also checked for
-sensitive values. Model labels use the identifier shape and are scrubbed for display.
+sensitive values. Identifiers, including model names, handles, session, cut and
+boundary ids, are validated and never scrubbed. Model names in the manifest,
+requested model and usage attempts share `^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$`
+and retain their values even when sensitive patterns match them.
 Artifacts have private file/directory permissions. Nothing uploads
 them; later model calls through the session client can still transmit prompts.
 

@@ -218,4 +218,10 @@ describe("offline compaction shadow triage", () => {
     expect(metrics.cuts[0].arms.A.outcome).toBe("answered");
     expect(metrics.cuts[0].arms.A.probeRetention).toBe(1);
   });
+  it("retains model identifiers in reports when a sensitive pattern matches their names", () => {
+    writeFileSync(paths.configPath, JSON.stringify({ security: { sensitivePatterns: ["fixture-model", "sonnet"] } }));
+    const metrics = report();
+    expect(metrics.cuts[0].arms.A.model).toBe("fixture-model");
+    expect(metrics.cuts[0].arms.C.model).toBe("sonnet");
+  });
 });

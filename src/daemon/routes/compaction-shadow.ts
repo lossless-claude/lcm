@@ -9,7 +9,7 @@ import { sendJson, type RouteHandler } from "../server.js";
 import { shadowMessages, nativeRecord, armRecord, correlationId } from "../shadow/records.js";
 import { captureShadowSnapshot } from "../shadow/snapshot.js";
 import { CompactionShadowStore, ShadowStoreError, recoverShadowProject, recoverShadowProjects } from "../shadow/store.js";
-import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, type ShadowManifest } from "../shadow/types.js";
+import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, validModelName, type ShadowManifest } from "../shadow/types.js";
 
 /** Benchmark policy is optional for capture, mandatory only for offline evaluation. */
 function excluded(cwd: string, paths: LcmPaths): boolean {
@@ -50,7 +50,7 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
   const requestHash = requestIdentityHash(input, cutId);
   const engineMessages = shadowMessages(input.engine_messages, scrubber);
   const instructions = scrubber.scrub(input.instructions as string ?? "");
-  const model = scrubber.scrub(input.model as string);
+  const model = input.model as string;
   if (prior) {
     if (prior.cut.requestIdentityHash !== requestHash)
       throw new ShadowStoreError("Cut request conflicts with its identity");
@@ -72,7 +72,7 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
 }
 function validateSnapshotInput(input: Record<string, unknown>): void {
   if (!safeId(input.boundary_uuid)) throw new ShadowStoreError("Invalid source boundary", HTTP.badRequest);
-  if (!safeId(input.model)) throw new ShadowStoreError("Invalid model", HTTP.badRequest);
+  if (!validModelName(input.model)) throw new ShadowStoreError("Invalid model", HTTP.badRequest);
   if (typeof input.trigger !== "string" || !["manual", "auto", "plugin"].includes(input.trigger)) throw new ShadowStoreError("Invalid trigger", HTTP.badRequest);
   validateOptionalText(input.instructions, MAX_INSTRUCTIONS_LENGTH);
   validateOptionalText(input.transcript_path);

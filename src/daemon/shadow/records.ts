@@ -1,6 +1,6 @@
 import { ScrubEngine } from "../../scrub.js";
 import { ShadowStoreError } from "./store.js";
-import { HTTP, HEADER_SECTIONS, digest, hash, object, safeId, nonnegative, validHeader, validUsage,
+import { HTTP, HEADER_SECTIONS, digest, hash, object, safeId, nonnegative, validHeader, validUsage, validModelName,
   type ArmRecord, type NativeRecord, type ShadowMessage, type ShadowHeader, type ShadowUsage } from "./types.js";
 
 const OUTCOMES = new Set(["answered", "skipped", "nothing-to-fork", "api-error", "empty-reply", "aborted", "invalid-output", "unavailable", "spend-cap", "unconfirmed"]);
@@ -77,11 +77,11 @@ export function armRecord(input: Record<string, unknown>, record: Record<string,
   validateArmIdentity(input, record);
   correlationId(input.attempt_id, scrubber);
   for (const value of [record.inputHash, record.promptHash]) correlationId(value, scrubber);
-  const attempts = usageAttempts(record.usageAttempts, scrubber);
+  const attempts = usageAttempts(record.usageAttempts);
   const options = completionOptions(record.options);
   const classification = failureClassification(record, scrubber);
   return { ...basicRecord(record, scrubber), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
-    requestedModel: scrubber.scrub(record.requestedModel as string), inputHash: record.inputHash as string, promptHash: record.promptHash as string, header: header(record.header, scrubber),
+    requestedModel: record.requestedModel as string, inputHash: record.inputHash as string, promptHash: record.promptHash as string, header: header(record.header, scrubber),
     usageAttempts: attempts, ...classification, ...(options ? { options } : {}),
   };
 }
@@ -90,18 +90,18 @@ export function armRecord(input: Record<string, unknown>, record: Record<string,
 function validateArmIdentity(input: Record<string, unknown>, record: Record<string, unknown>): void {
   if (typeof input.arm !== "string" || !["A", "B", "C"].includes(input.arm)) throw new ShadowStoreError("Invalid arm", HTTP.badRequest);
   if (!safeId(input.attempt_id)) throw new ShadowStoreError("Invalid attempt", HTTP.badRequest);
-  if (!safeId(record.requestedModel)) throw new ShadowStoreError("Invalid model", HTTP.badRequest);
+  if (!validModelName(record.requestedModel)) throw new ShadowStoreError("Invalid model", HTTP.badRequest);
   validatePromptHashes(record);
 }
-function usageAttempts(value: unknown, scrubber: ScrubEngine): ArmRecord["usageAttempts"] {
+function usageAttempts(value: unknown): ArmRecord["usageAttempts"] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new ShadowStoreError("Invalid usage attempts", HTTP.badRequest);
   return value.map(attempt => {
     if (!object(attempt)) throw new ShadowStoreError("Invalid usage attempt", HTTP.badRequest);
-    if (typeof attempt.failed !== "boolean" || !safeId(attempt.model)) throw new ShadowStoreError("Invalid usage attribution", HTTP.badRequest);
+    if (typeof attempt.failed !== "boolean" || !validModelName(attempt.model)) throw new ShadowStoreError("Invalid usage attribution", HTTP.badRequest);
     const reported = usage(attempt.usage);
     if (!reported) throw new ShadowStoreError("Missing attempt usage", HTTP.badRequest);
-    return { usage: reported, failed: attempt.failed, model: scrubber.scrub(attempt.model) };
+    return { usage: reported, failed: attempt.failed, model: attempt.model };
   });
 }
 function completionOptions(value: unknown): ArmRecord["options"] {

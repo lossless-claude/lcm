@@ -38,6 +38,8 @@ export const digest = (text: string): string => createHash("sha256").update(text
 export const objectHash = (value: unknown): string => digest(JSON.stringify(value));
 export const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 export const safeId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,140}$/.test(value);
+export const validModelName = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/.exec(value)?.[0] === value;
 export const hash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 export const nonnegative = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 export function validUsage(value: unknown): value is ShadowUsage {

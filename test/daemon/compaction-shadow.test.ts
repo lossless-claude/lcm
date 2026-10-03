@@ -137,6 +137,35 @@ describe("daemon compaction shadow artifacts", () => {
     expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, requestedModel: "Bearer PRIVATE_WORD" } })).status).toBe(400);
     expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, usageAttempts: [{ model: "Bearer PRIVATE_WORD", failed: true, usage }] } })).status).toBe(400);
   });
+  it("preserves distinct model names in cuts and usage despite matching sensitive patterns", async () => {
+    await daemon.stop(); await boot(["PRIVATE_WORD", "^(?:sonnet|opus)$"]);
+    for (const [cutId, model] of [["model-one", "sonnet"], ["model-two", "opus"]]) {
+      const request = { ...startInput(cutId), model, instructions: "PRIVATE_WORD" };
+      const result = await post("start", request); expect(result.status).toBe(200);
+      expect(artifact("manifest.json", cutId)).toMatchObject({ model, instructions: "[REDACTED]" });
+      const record = { ...arm(result.body).record, requestedModel: model,
+        usageAttempts: [{ model, failed: true, usage }] };
+      expect((await post("arm", { ...arm(result.body), record })).status).toBe(200);
+      expect(artifact("arm-A-first.json", cutId)).toMatchObject({ requestedModel: model, usageAttempts: [{ model }] });
+      expect((await post("start", request)).status).toBe(200);
+      expect((await post("start", { ...request, model: model === "sonnet" ? "opus" : "sonnet" })).status).toBe(409);
+    }
+    expect(artifact("manifest.json", "model-one").model).not.toBe(artifact("manifest.json", "model-two").model);
+  });
+  it.each(["vendor/sonnet.v1:beta", "7model-name", "model_name", "a".repeat(64)])("accepts the model-name alphabet and length in all fields (%s)", async model => {
+    const result = await post("start", { ...startInput(), model }); expect(result.status).toBe(200);
+    expect(result.body.cut.model).toBe(model);
+    const record = { ...arm(result.body).record, requestedModel: model, usageAttempts: [{ model, failed: true, usage }] };
+    expect((await post("arm", { ...arm(result.body), record })).status).toBe(200);
+    expect(artifact("arm-A-first.json")).toMatchObject({ requestedModel: model, usageAttempts: [{ model }] });
+  });
+  it.each(["", "_bad", "-bad", ".bad", ":bad", "/bad", "son net", "model[1m]", "a".repeat(65), "sonnet\n"])("rejects invalid model names in all fields (%s)", async model => {
+    expect((await post("start", { ...startInput(), model })).status).toBe(400);
+    const cut = await start();
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, requestedModel: model } })).status).toBe(400);
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, usageAttempts: [{ model, failed: true, usage }] } })).status).toBe(400);
+    expect(existsSync(join(dir(), "arm-A-first.json"))).toBe(false);
+  });
   it.each(["errorKind", "inputHash", "promptHash"])("rejects sensitive identifier in %s metadata", async field => {
     const value = field === "errorKind" ? "private_word" : "a".repeat(64);
     await daemon.stop(); await boot(["PRIVATE_WORD", `^${value}$`]);
@@ -191,11 +220,11 @@ describe("daemon compaction shadow artifacts", () => {
     expect((await post("arm", { ...arm(cut), snapshot_hash: "b".repeat(64) })).status).toBe(409);
     expect((await post("start", { ...startInput(), model: "other" })).status).toBe(409);
   });
-  it("accepts identical raw model identities while storing only the scrubbed label", async () => {
+  it("preserves model identity when retrying admission", async () => {
     const request = { ...startInput(), model: "PRIVATE_WORD" };
     const first = await post("start", request);
     expect(first.status).toBe(200);
-    expect(first.body.cut.model).not.toContain("PRIVATE_WORD");
+    expect(first.body.cut.model).toBe("PRIVATE_WORD");
     const retry = await post("start", request);
     expect(retry.status).toBe(200);
     expect(retry.body.cut.snapshotHash).toBe(first.body.cut.snapshotHash);
@@ -208,12 +237,12 @@ describe("daemon compaction shadow artifacts", () => {
     await daemon.stop(); await boot(["PRIVATE_WORD", "^(?:sonnet|opus|directive-one|directive-two)$"]);
     const request = { ...startInput(), model: "sonnet", instructions: "directive-one" };
     const first = await post("start", request); expect(first.status).toBe(200);
-    expect(first.body.cut.model).toBe("[REDACTED]"); expect(first.body.cut.instructions).toBe("[REDACTED]");
+    expect(first.body.cut.model).toBe("sonnet"); expect(first.body.cut.instructions).toBe("[REDACTED]");
     const before = readFileSync(join(dir(), "manifest.json"), "utf8");
     expect((await post("start", { ...request, [field]: value })).status).toBe(409);
     expect((await post("start", request)).status).toBe(200);
     expect(readFileSync(join(dir(), "manifest.json"), "utf8")).toBe(before);
-    expect(before).not.toContain("sonnet"); expect(before).not.toContain("directive-one");
+    expect(artifact("manifest.json").model).toBe("sonnet"); expect(before).not.toContain("directive-one");
   });
   it("rejects changed raw instruction presence instead of comparing defaulted display text", async () => {
     await start();
@@ -225,7 +254,7 @@ describe("daemon compaction shadow artifacts", () => {
     writeFileSync(join(dir(), "manifest.json"), JSON.stringify(manifest));
     expect((await post("start", startInput())).status).toBe(409);
   });
-  it("rejects concurrent identities that collapse to the same scrubbed model", async () => {
+  it("rejects concurrent different model identities", async () => {
     await daemon.stop(); await boot(["PRIVATE_WORD", "^(?:sonnet|opus)$"]);
     const results = await Promise.all([post("start", { ...startInput(), model: "sonnet" }), post("start", { ...startInput(), model: "opus" })]);
     expect(results.map(result => result.status).sort()).toEqual([200, 409]);
