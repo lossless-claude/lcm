@@ -29,6 +29,8 @@ export type NativeRecord = {
   text: string; outcome: string; usage: ShadowUsage | null; durationMs: number | null;
   tail: ShadowMessage[]; rawTextHash: string; rawTextBytes: number; summaryUuid?: string;
   tokensBefore?: number; tokensAfter?: number; hookAddedMs?: number; costUsd: number | null;
+  fidelity?: "verified" | "native-summary-unverified" | "native-tail-unverified" | "skipped" | "aborted" | "unavailable";
+  observedMessages?: ShadowMessage[]; candidateIndices?: number[];
 };
 export type ArmRecord = {
   arm: "A" | "B" | "C"; attemptId: string; text: string; header: StoredShadowHeader | null;

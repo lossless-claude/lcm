@@ -61,6 +61,22 @@ async function withSummaryStore(operation: (store: SummaryStore) => Promise<void
   finally { db.close(); }
 }
 describe("daemon compaction shadow artifacts", () => {
+  it("prepares fork and paired completion jobs from the same immutable cut on request", async () => {
+    const admitted = await post("start", { ...startInput(), prepare_header: true });
+    expect(admitted.status).toBe(200); expect(admitted.body.job.forkPrompt).toContain("instructionsInForce");
+    const nativeRequest = native(admitted.body);
+    const paired = await post("native", { ...nativeRequest, prepare_header: true });
+    expect(paired.status).toBe(200); expect(paired.body.job.completePrompt).toContain("[REDACTED]");
+    expect(paired.body.job.inputHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(paired.body.job.evidence.cutId).toBe(admitted.body.cut.cutId);
+  });
+  it("stores explicit native extraction ambiguity and does not prepare completion input", async () => {
+    const cut = await start();
+    const paired = await post("native", { ...binding(cut), prepare_header: true, record: { text: "", outcome: "unavailable", fidelity: "native-summary-unverified", tail: [],
+      observedMessages: [{ role: "user", text: "candidate one" }, { role: "user", text: "candidate two" }], candidateIndices: [0, 1] } });
+    expect(paired.status).toBe(200); expect(paired.body.job).toBeNull();
+    expect(artifact("native.json")).toMatchObject({ outcome: "unavailable", fidelity: "native-summary-unverified", candidateIndices: [0, 1] });
+  });
   it("admits without benchmark policy and freezes verified all-role raw sources", async () => {
     const cut = await start();
     expect(cut.snapshot.originals.map((row: any) => row.role)).toEqual(["user", "tool"]);

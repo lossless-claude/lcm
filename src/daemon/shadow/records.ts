@@ -74,12 +74,19 @@ function basicRecord(record: Record<string, unknown>, scrubber: ScrubEngine) {
 export function nativeRecord(record: Record<string, unknown>, scrubber: ScrubEngine): NativeRecord {
   const base = basicRecord(record, scrubber);
   if (record.summaryUuid !== undefined) correlationId(record.summaryUuid, scrubber);
-  return { ...base, tail: shadowMessages(record.tail, scrubber), rawTextHash: digest(record.text as string), rawTextBytes: Buffer.byteLength(record.text as string, "utf8"),
+  return { ...base, ...nativeExtraction(record, scrubber), tail: shadowMessages(record.tail, scrubber), rawTextHash: digest(record.text as string), rawTextBytes: Buffer.byteLength(record.text as string, "utf8"),
     ...(record.summaryUuid ? { summaryUuid: record.summaryUuid as string } : {}),
     ...(record.tokensBefore !== undefined ? { tokensBefore: measurement(record.tokensBefore)! } : {}),
     ...(record.tokensAfter !== undefined ? { tokensAfter: measurement(record.tokensAfter)! } : {}),
     ...(record.hookAddedMs !== undefined ? { hookAddedMs: measurement(record.hookAddedMs)! } : {}),
   };
+}
+function nativeExtraction(record: Record<string, unknown>, scrubber: ScrubEngine): Pick<NativeRecord, "fidelity" | "observedMessages" | "candidateIndices"> {
+  if (record.fidelity === undefined) return {};
+  if (!["verified", "native-summary-unverified", "native-tail-unverified", "skipped", "aborted", "unavailable"].includes(record.fidelity as string)) throw new ShadowStoreError("Invalid native fidelity", HTTP.badRequest);
+  const candidateIndices = record.candidateIndices ?? [];
+  if (!Array.isArray(candidateIndices) || candidateIndices.some(value => !Number.isSafeInteger(value) || value < 0)) throw new ShadowStoreError("Invalid native candidates", HTTP.badRequest);
+  return { fidelity: record.fidelity as NativeRecord["fidelity"], candidateIndices, observedMessages: shadowMessages(record.observedMessages, scrubber) };
 }
 export function armRecord(input: Record<string, unknown>, record: Record<string, unknown>, scrubber: ScrubEngine): ArmRecord {
   validateArmIdentity(input, record);
@@ -144,6 +151,6 @@ function apiStatus(value: unknown): number | null {
 }
 
 function validatePromptHashes(record: Record<string, unknown>): void {
-  const known = (value: unknown) => hash(value) || value === null && record.outcome === "unavailable";
+  const known = (value: unknown) => hash(value) || value === null && ["unavailable", "aborted"].includes(record.outcome as string);
   if (!known(record.inputHash) || !known(record.promptHash)) throw new ShadowStoreError("Invalid prompt hashes", HTTP.badRequest);
 }
