@@ -144,8 +144,15 @@ phase-2 stub. The output directory must not already exist.
 `lcm doctor` counts project directories without a `meta.json` file and directories
 whose recorded absolute cwd no longer exists, including ordinary missing
 checkouts. Cwd checks run asynchronously with a 1 s deadline per stat and at
-most four outstanding stats. A timed-out stat keeps its concurrency slot: if all
-slots time out, remaining cwds are left unchecked. Doctor reports timed-out,
+most two outstanding stats, leaving two threads free in libuv's default pool.
+Smaller configured threadpools reserve at least one thread; a one-thread pool
+leaves all cwds unchecked. Only one stat per mount runs at a time. A timeout
+quarantines that mount: later cwds on it remain unchecked without being stat'ed,
+while another worker continues checking other mounts. Mount points come from
+Linux's mount table or macOS's mount listing; otherwise quarantine conservatively
+uses the filesystem root (drive or share on Windows). A timed-out stat keeps its
+concurrency slot: if all slots time out, remaining cwds are left unchecked.
+Doctor reports timed-out,
 unattempted and unreadable cwds separately from missing cwds, warns about them,
 and continues reporting its other checks. Unchecked cwds never count as missing
 or stale. Corrupt or unreadable records are not counted as missing files.
