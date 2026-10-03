@@ -1,4 +1,4 @@
-export type BudgetLease = { maxTokens?: number; allowance: number; settle(outputTokens: number | null): void };
+export type BudgetLease = { maxTokens?: number; allowance: number; settle(outputTokens: number | null, usageUnknown?: boolean): void };
 export class SessionOutputBudget {
   private spent = 0;
   private reserved = 0;
@@ -38,23 +38,28 @@ export class SessionOutputBudget {
   private changed(): Promise<void> { return new Promise(resolve => this.waiters.push(resolve)); }
   private lease(allowance: number, maxTokens?: number): BudgetLease {
     let settled = false;
-    return { allowance, ...(maxTokens !== undefined ? { maxTokens } : {}), settle: output => {
+    return { allowance, ...(maxTokens !== undefined ? { maxTokens } : {}), settle: (output, usageUnknown = false) => {
       if (settled) throw new Error("Budget reservation already settled");
       if (output !== null && (!Number.isSafeInteger(output) || output < 0)) throw new Error("Invalid output usage");
       settled = true;
-      this.finish(allowance, maxTokens, output);
+      this.finish({ allowance, maxTokens }, { output, usageUnknown });
     } };
   }
-  private finish(allowance: number, maxTokens: number | undefined, output: number | null): void {
+  private finish({ allowance, maxTokens }: { allowance: number; maxTokens?: number }, { output, usageUnknown }: { output: number | null; usageUnknown: boolean }): void {
     if (maxTokens === undefined) this.unbounded = false;
     else this.reserved -= allowance;
-    if (output === null) this.usageUnknown = true;
-    else this.spent += output;
+    this.usageUnknown ||= usageUnknown || output === null;
+    if (output !== null) this.spent += output;
     const waiters = this.waiters; this.waiters = [];
     waiters.forEach(resolve => resolve());
   }
 }
 const owners = new WeakMap<object, Map<string, SessionOutputBudget>>();
+const moduleOwner = {};
+/** Dispatch facades need not have stable object identity; this owner does. */
+export function sharedSessionOutputBudget(sessionId: string, cap: number): SessionOutputBudget {
+  return sessionOutputBudget(moduleOwner, sessionId, cap);
+}
 export function sessionOutputBudget(owner: object, sessionId: string, cap: number): SessionOutputBudget {
   const sessions = owners.get(owner) ?? new Map<string, SessionOutputBudget>();
   const prior = sessions.get(sessionId);

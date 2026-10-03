@@ -38,4 +38,12 @@ describe("compaction user excerpts", () => {
     expect(checkExcerpts([{ ...excerpts[0], text: "Publishing is prohibited." }], originals, "cut-a")).toEqual(["u1"]);
     expect(checkExcerpts([{ ...excerpts[1], spans: ["/review", "Carefully."], text: "/review\nCarefully." }], originals, "cut-a")).toEqual(["u2"]);
   });
+  it("omits command markup nested inside a generated reminder", () => {
+    const text = "<system-reminder><command-name>/review</command-name><command-args>Never deploy</command-args></system-reminder>";
+    expect(assembleExcerpts([user(1, text)], "cut-a").excerpts).toEqual([]);
+  });
+  it.each(["Don’t publish this patch.", "I authorize deployment.", "<command-name>  /review</command-name><command-args>details</command-args>"])("protects directive or permission wording without a hard size cap (%s)", text => {
+    const selected = assembleExcerpts([user(1, "first question?"), user(2, text)], "cut-a", { targetBytes: 0 });
+    expect(selected.excerpts.map(row => row.rawMessageId)).toEqual([1, 2]);
+  });
 });

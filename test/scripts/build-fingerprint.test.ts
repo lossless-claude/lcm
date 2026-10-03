@@ -55,4 +55,9 @@ describe("sourceFingerprint", () => {
     const touched = tree({ "src/a.ts": "export const a = 1;\n", "bin/b.ts": "export const b = 2;\n" });
     expect(sourceFingerprint(touched)).not.toBe(sourceFingerprint(base));
   });
+  it("covers the sandbox schema imported by daemon code", () => {
+    const before = tree({ "hooks/compaction-header-schema.ts": "version 1" });
+    const after = tree({ "hooks/compaction-header-schema.ts": "version 2" });
+    expect(sourceFingerprint(after)).not.toBe(sourceFingerprint(before));
+  });
 });

@@ -6,7 +6,9 @@ import { projectDir, projectId } from "../../daemon/project.js";
 import { ScrubEngine } from "../../scrub.js";
 import { verifyNativeTail } from "../../daemon/shadow/tail.js";
 import { corpusConfigPath, readCorpusConfig, isExcluded } from "../corpus-policy.js";
-import { digest, object, objectHash, validUsage, validHeader, HEADER_SECTIONS, type ShadowUsage, type ArmRecord } from "../../daemon/shadow/types.js";
+import { digest, object, objectHash, validUsage, validStoredHeader, HEADER_SECTIONS, type ShadowUsage, type ArmRecord } from "../../daemon/shadow/types.js";
+import { mapCompactionHeaderText } from "../../../hooks/compaction-header-schema.js";
+import { prepareHeaderJob, renderCompactionDocument } from "../../daemon/shadow/header-job.js";
 import { allowedProjects, shadowCandidates, discoverTranscripts, historicalCuts, type CutCandidate, type EvaluationCut, type TranscriptInput, type ReadCounts } from "./reader.js";
 import { checkFaithfulness, renderHeader } from "./faithfulness.js";
 import { transcriptOwnership } from "./transcript-owner.js";
@@ -64,12 +66,14 @@ function validTranscriptInput(row: unknown): boolean {
 }
 function scrubCut(cut: EvaluationCut, scrubber: ScrubEngine): EvaluationCut {
   const text = (value: string) => scrubber.scrub(value);
-  const header = (value: ArmRecord["header"]) => value === null ? null : { ...value, ...Object.fromEntries(
+  const header = (value: ArmRecord["header"]) => value === null ? null : value.version === 2 ? mapCompactionHeaderText(value, text) : { ...value, ...Object.fromEntries(
     HEADER_SECTIONS.map(key => [key, value[key].map(item => ({
       ...item, text: text(item.text), sources: item.sources.map(source => typeof source === "string" ? (/^\[(?:raw:[A-Za-z0-9_-]+:\d+|sum:sum_[A-Za-z0-9_-]+)\]$/.test(source) ? source : text(source)) : { quote: text(source.quote) }),
       ...(item.status ? { status: text(item.status) } : {}), ...(item.fix ? { fix: text(item.fix) } : {}),
     }))])) };
   return { ...cut, originals: cut.originals.map(row => ({ ...row, text: text(row.text) })), window: cut.window === null ? null : text(cut.window),
+    engineMessages: cut.engineMessages.map(row => ({ ...row, text: text(row.text) })),
+    windowItems: cut.windowItems?.map(row => ({ ...row, content: text(row.content) })) ?? null,
     native: cut.native === null ? null : { ...cut.native, text: text(cut.native.text), tail: cut.native.tail.map(row => ({ ...row, text: text(row.text) })) },
     arms: cut.arms.map(arm => ({ ...arm, text: text(arm.text), header: header(arm.header) })) };
 
@@ -90,12 +94,16 @@ function measures(cut: EvaluationCut, rates?: RateTable) {
   const arms = Object.fromEntries((["A", "B", "C"] as const).map(label => {
     const records = cut.arms.filter(record => record.arm === label), primary = records.find(record => record.outcome === "answered") ?? records[0];
     if (!primary) return [label, null];
-    const valid = validHeader(primary.header);
+    const valid = validStoredHeader(primary.header);
     const rendered = valid ? renderHeader(primary.header!) : primary.text;
-    const document = [rendered, cut.window, tail].filter(Boolean).join("\n\n");
+    const prepared = primary.header?.version === 2 && cut.windowItems ? prepareHeaderJob({ cutId: cut.cutId, instructions: "", originals: cut.originals,
+      window: cut.windowItems, tail: cut.native?.tail ?? [], engineMessages: cut.engineMessages }) : null;
+    const sized = prepared && primary.header?.version === 2 ? renderCompactionDocument(prepared, primary.header) : null;
+    const document = sized?.text ?? [rendered, cut.window, tail].filter(Boolean).join("\n\n");
     const summaryIds = new Map(cut.summaryCoverage.map(row => [row.summaryId, row.messageIds]));
     return [label, { outcome: primary.outcome, model: primary.requestedModel, attempts: records.length, headerValid: valid,
-      faithfulness: valid ? checkFaithfulness(primary.header!, { originals: cut.originals, cutId: cut.cutId, summaries: summaryIds }) : null,
+      faithfulness: valid ? checkFaithfulness(primary.header!, { originals: cut.originals, cutId: cut.cutId, summaries: summaryIds, ...(prepared ? { excerpts: prepared.excerpts } : {}) }) : null,
+      documentOverflowBytes: sized?.overflowBytes ?? null, documentTargetBytes: sized?.targetBytes ?? null, omittedSummaryIds: sized?.omittedSummaryIds ?? null,
       documentBytes: Buffer.byteLength(document), estimatedTokens: Math.ceil(document.length / CHARS_PER_TOKEN), probeRetention: retention(document, probes),
       usage: primary.usage, durationMs: primary.durationMs, status: primary.status ?? null, errorKind: primary.errorKind ?? null, options: primary.options ?? null, costUsd: armCost(records, rates) }];
   }));
@@ -106,7 +114,7 @@ function measures(cut: EvaluationCut, rates?: RateTable) {
       A_B: { intendedFactor: "input", bothAnswered: ["A", "B"].every(label => cut.arms.some(arm => arm.arm === label && arm.outcome === "answered")),
         modelsMatch: cut.arms.find(arm => arm.arm === "A")?.requestedModel === cut.arms.find(arm => arm.arm === "B")?.requestedModel },
       B_C: { intendedFactor: "model", bothAnswered: ["B", "C"].every(label => cut.arms.some(arm => arm.arm === label && arm.outcome === "answered")),
-        inputsMatch: cut.arms.find(arm => arm.arm === "B")?.inputHash === cut.arms.find(arm => arm.arm === "C")?.inputHash },
+        inputsMatch: typeof cut.arms.find(arm => arm.arm === "B")?.inputHash === "string" && cut.arms.find(arm => arm.arm === "B")?.inputHash === cut.arms.find(arm => arm.arm === "C")?.inputHash },
     },
     windowOnly: cut.window === null ? null : { bytes: Buffer.byteLength(cut.window), probeRetention: retention([cut.window, tail].join("\n\n"), probes) } } };
 }

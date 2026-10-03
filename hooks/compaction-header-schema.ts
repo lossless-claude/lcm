@@ -9,7 +9,14 @@ export type CompactionHeader = {
   procedure: WorkingItem[]; nextSteps: (WorkingItem & { provenance: HeaderProvenance })[];
   openThreads: WorkingItem[]; files: (WorkingItem & { status: string })[]; errors: (WorkingItem & { fix: string })[];
 };
+export type CompactionHeaderItem = CompactionHeader[typeof COMPACTION_HEADER_SECTIONS[number]][number];
+export function compactionHeaderItems(header: CompactionHeader): CompactionHeaderItem[] {
+  return COMPACTION_HEADER_SECTIONS.flatMap<CompactionHeaderItem>(key => header[key]);
+}
 const PROVENANCE = ["authorized by the user", "proposed by the assistant", "observed", "unresolved"];
+export function validModelName(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/.exec(value)?.[0] === value;
+}
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const only = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).every(key => keys.includes(key));
@@ -17,7 +24,9 @@ export function validHeaderSource(value: unknown): value is HeaderSource {
   if (record(value)) return only(value, ["quote"]) && text(value.quote);
   if (typeof value !== "string") return false;
   const match = /^\[(?:excerpt:[A-Za-z0-9_-]{1,140}|sum:sum_[A-Za-z0-9_-]{1,136}|raw:[A-Za-z0-9_-]{1,140}:[1-9]\d*)\]$/.exec(value);
-  return match?.[0] === value;
+  if (match?.[0] !== value) return false;
+  const raw = /^\[raw:[A-Za-z0-9_-]+:([1-9]\d*)\]$/.exec(value);
+  return !raw || Number.isSafeInteger(Number(raw[1]));
 }
 function sourced(value: unknown): value is Record<string, unknown> & { sources: HeaderSource[] } {
   return record(value) && Array.isArray(value.sources) && value.sources.length > 0 && value.sources.every(validHeaderSource);
@@ -53,4 +62,22 @@ const validators: Record<typeof COMPACTION_HEADER_SECTIONS[number], (value: unkn
 export function validCompactionHeader(value: unknown): value is CompactionHeader {
   if (!record(value) || value.version !== 2 || !only(value, ["version", ...COMPACTION_HEADER_SECTIONS])) return false;
   return COMPACTION_HEADER_SECTIONS.every(key => Array.isArray(value[key]) && value[key].every(validators[key]));
+}
+/** String identifiers and typed state retain identity; only free text is mapped. */
+export function mapCompactionHeaderText(value: CompactionHeader, map: (text: string) => string): CompactionHeader {
+  const result = JSON.parse(JSON.stringify(value)) as CompactionHeader;
+  for (const key of COMPACTION_HEADER_SECTIONS) for (const item of result[key]) {
+    mapWorkingItem({ item, file: key === "files" }, map);
+  }
+  return result;
+}
+function mapWorkingItem({ item, file }: { item: CompactionHeaderItem; file: boolean }, map: (text: string) => string): void {
+  item.sources = item.sources.map(source => mapSourceQuote(source, map)) as typeof item.sources;
+  if ("text" in item) item.text = map(item.text);
+  if ("fix" in item) item.fix = map(item.fix);
+  if (file && "status" in item) item.status = map(item.status) as typeof item.status;
+  if ("supersedes" in item) item.supersedes = item.supersedes?.map(source => mapSourceQuote(source, map));
+}
+function mapSourceQuote(source: HeaderSource, map: (text: string) => string): HeaderSource {
+  return typeof source === "string" ? source : { quote: map(source.quote) };
 }

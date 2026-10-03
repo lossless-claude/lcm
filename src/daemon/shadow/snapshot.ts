@@ -30,7 +30,7 @@ async function readSnapshot({ paths, scrubber, input, fileForProject }: { paths:
     requireVerifiedCapture(captured);
     const raw = readFileSync(captured.transcriptPath, "utf8");
     const index = indexOriginals(raw, scrubber, input.boundaryUuid);
-    const window = await readCompactionContext(capture.summaryStore, captured.conversationId, MAX_WINDOW_BYTES);
+    const window = await readCompactionContext(capture.summaryStore, captured.conversationId, { byteBudget: MAX_WINDOW_BYTES, includeItems: true });
     if (window.status !== "ready" || !window.valid) throw new ShadowStoreError(`Context is unavailable: ${window.status}`, HTTP.unprocessable);
     const ids = new Set(window.capturedMessageIds);
     const records = (await capture.conversationStore.getMessages(captured.conversationId)).filter(row => ids.has(row.messageId));
@@ -38,11 +38,16 @@ async function readSnapshot({ paths, scrubber, input, fileForProject }: { paths:
     if (originals.length !== ids.size || originals.some(row => !index.has(JSON.stringify([row.role, row.text]))))
       throw new ShadowStoreError("Captured originals do not match the source", HTTP.unprocessable);
     if (readFileSync(captured.transcriptPath, "utf8") !== raw) throw new ShadowStoreError("Source changed during snapshot", HTTP.unprocessable);
-    const { capturedMessageIds, renderedMessageIds, summaryCoverage, uncoveredMessageIds, valid } = window;
     return { conversationId: captured.conversationId, snapshot: { version: 1,
       originals: originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), engineMessages: [], sourceHash: digest(raw),
-      window: { text: scrubber.scrub(window.text), coverage: { capturedMessageIds, renderedMessageIds, summaryCoverage, uncoveredMessageIds, valid } } } };
+      window: freezeWindow(window, scrubber) } };
   } finally { db.close(); }
+}
+function freezeWindow(window: Extract<Awaited<ReturnType<typeof readCompactionContext>>, { status: "ready" }>, scrubber: ScrubEngine): ShadowSnapshot["window"] {
+  if (!window.items) throw new ShadowStoreError("Structured window is unavailable", HTTP.unprocessable);
+  const { capturedMessageIds, renderedMessageIds, summaryCoverage, uncoveredMessageIds, valid } = window;
+  return { text: scrubber.scrub(window.text), items: window.items.map(row => ({ ...row, content: scrubber.scrub(row.content) })),
+    coverage: { capturedMessageIds, renderedMessageIds, summaryCoverage, uncoveredMessageIds, valid } };
 }
 function requireVerifiedCapture(captured: Awaited<ReturnType<SessionCapture["captureTranscript"]>>): asserts captured is NonNullable<typeof captured> {
   if (!captured?.verification?.verified || !captured.verification.complete || !captured.verification.boundaryFound)
@@ -76,7 +81,11 @@ function originalsFromRecords(records: Awaited<ReturnType<SessionCapture["conver
   return records.map(row => {
     const matches = index.get(JSON.stringify([row.role, row.content])) ?? [];
     const matched = matches.length === 1 ? matches[0] : undefined;
-    return { id: row.messageId, seq: row.seq, role: row.role, text: row.content, origin: matched?.origin ?? "unknown", ...(matched?.uuid ? { uuid: matched.uuid } : {}) };
+    return { id: row.messageId, seq: row.seq, role: row.role, text: row.content, origin: matched?.origin ?? unanimousOrigin(matches), ...(matched?.uuid ? { uuid: matched.uuid } : {}) };
   });
 
+}
+function unanimousOrigin(matches: { origin: ShadowOriginal["origin"] }[]): ShadowOriginal["origin"] {
+  const first = matches[0];
+  return first && matches.every(match => match.origin === first.origin) ? first.origin : "unknown";
 }

@@ -102,6 +102,13 @@ preserved exactly; sensitive identifiers are rejected. Admission retries compare
 a digest of raw identity fields, so redaction cannot hide a changed request.
 Native tails must match frozen engine handles in order, with the same role and
 current-rule scrubbed text; conflicting deliveries return HTTP 409.
+The header library prepares version-2 state and deterministic verbatim excerpts,
+without registering a compaction hook. Ordinary summaries and header arms share
+the existing `sessionSummarizerMaxOutputTokens` owner by session id, preserving
+spending across poller restarts. Complete requests reserve allowances; uncapped
+fork overshoot and unknown usage remain explicit. Document/header sizes are
+targets and instruction overflow is measured. See
+[compaction header jobs](design/compaction-header.md).
 
 `bench-corpora.json` is optional for shadow admission: a valid existing exclusion
 skips a project's cuts before Capture; missing or invalid policy does not disable

@@ -24,6 +24,7 @@
 // `claude plugin validate` reads this file statically: `$` may only be passed to a function
 // declared at the top level, and calls on it must be spelled `$.noun.method(...)`.
 import type { Register, EngineInterface } from "claude-code";
+import { sharedSessionOutputBudget, type SessionOutputBudget } from "./model-budget.js";
 
 /** Same set the PostToolUse matcher in plugin.json names; `mcp__*` is matched by prefix. */
 const CAPTURED_TOOLS = new Set([
@@ -105,23 +106,23 @@ function noteHook(
     hookSnapshots.delete(hookSnapshots.keys().next().value!);
   }
   hookSnapshots.set(sessionId, snapshot);
-  const key = JSON.stringify([hook, operation, kind, status, reason]);
+  noteObservation(snapshot, { hook, operation, kind, status, reason, count: 1 });
+}
+function noteObservation(snapshot: HookSnapshot, observation: HookObservation): void {
+  const key = JSON.stringify([observation.hook, observation.operation, observation.kind, observation.status, observation.reason]);
   const existing = snapshot.counts.get(key);
   if (existing) existing.count++;
-  else {
-    if (snapshot.counts.size >= MAX_HOOK_OBSERVATIONS) {
-      snapshot.counts.delete(snapshot.counts.keys().next().value!);
-      snapshot.truncated = true;
-    }
-    snapshot.counts.set(key, { hook, operation, kind, status, reason, count: 1 });
+  else addObservation(snapshot, key, observation);
+  if (observation.status !== "failed" && observation.status !== "rejected") return;
+  snapshot.failures.push({ hook: observation.hook, operation: observation.operation, code: observation.reason || observation.status, at: Date.now() });
+  if (snapshot.failures.length <= 32) return;
+  snapshot.failures.shift(); snapshot.truncated = true;
+}
+function addObservation(snapshot: HookSnapshot, key: string, observation: HookObservation): void {
+  if (snapshot.counts.size >= MAX_HOOK_OBSERVATIONS) {
+    snapshot.counts.delete(snapshot.counts.keys().next().value!); snapshot.truncated = true;
   }
-  if (status === "failed" || status === "rejected") {
-    snapshot.failures.push({ hook, operation, code: reason || status, at: Date.now() });
-    if (snapshot.failures.length > 32) {
-      snapshot.failures.shift();
-      snapshot.truncated = true;
-    }
-  }
+  snapshot.counts.set(key, observation);
 }
 
 async function flushHookObservations($: EngineInterface, sessionId: string): Promise<void> {
@@ -129,7 +130,19 @@ async function flushHookObservations($: EngineInterface, sessionId: string): Pro
   const snapshot = hookSnapshots.get(sessionId);
   if (!snapshot || snapshot.writing) return;
   snapshot.writing = true;
-  const write = async () => {
+  const pending = writeHookSnapshot($, { snapshot, sessionId }).catch(() => undefined)
+    .finally(() => { snapshot.writing = false; });
+  try {
+    await Promise.race([
+      pending,
+      $.clock.sleep(250),
+    ]);
+  } catch {
+    return; // Diagnostic host failure leaves the turn usable.
+  }
+}
+
+async function writeHookSnapshot($: EngineInterface, { snapshot, sessionId }: { snapshot: HookSnapshot; sessionId: string }): Promise<void> {
     const { tmpDir } = await readHostEnv($);
     const safeId = sessionFileId(sessionId);
     const cwd = await $.session.cwd().catch(() => "");
@@ -143,22 +156,16 @@ async function flushHookObservations($: EngineInterface, sessionId: string): Pro
     try {
       await $.fs.write(path, content);
     } catch {
-      if (!failedHookSnapshotWrites.has(sessionId)) {
-        failedHookSnapshotWrites.add(sessionId);
-        try { $.ui.log("[lcm] hook observation snapshot could not be written"); } catch { /* diagnostic only */ }
-      }
+      warnSnapshotWrite($, sessionId);
     }
-  };
-  const pending = write().catch(() => { /* diagnostic preparation is best-effort */ })
-    .finally(() => { snapshot.writing = false; });
-  try {
-    await Promise.race([
-      pending,
-      $.clock.sleep(250),
-    ]);
-  } catch {
-    // Host calls may throw before returning a promise.
-  }
+
+}
+
+function warnSnapshotWrite($: EngineInterface, sessionId: string): void {
+  if (failedHookSnapshotWrites.has(sessionId)) return;
+  failedHookSnapshotWrites.add(sessionId);
+  try { $.ui.log("[lcm] hook observation snapshot could not be written"); }
+  catch { return; }
 }
 
 /** No config file yet, or one being rewritten, both mean the compiled-in port. */
@@ -296,6 +303,9 @@ async function startDaemon($: EngineInterface): Promise<boolean> {
     if (lastDaemonStartAt === now) lastDaemonStartAt = 0;
     return false;
   }
+  return reportDaemonLaunch($, run);
+}
+function reportDaemonLaunch($: EngineInterface, run: Awaited<ReturnType<EngineInterface["process"]["run"]>> | null): boolean {
   if (run?.exitCode === 0) return true;
   if (run?.exitCode === EXIT_COMMAND_NOT_FOUND && !warnedNoLcmBinary) {
     warnedNoLcmBinary = true;
@@ -473,43 +483,38 @@ async function completeSummary($: EngineInterface, job: SummaryJob, remainingTok
 }
 
 async function answerSummary($: EngineInterface, job: SummaryJob, remainingTokens: number): Promise<SummaryAnswer> {
-  if (job.kind === "condensed") {
-    const fork = await $.model.fork({ prompt: `${job.system}\n\n${job.prompt}` }).catch(() => null);
-    // As in completeSummary: a fork can carry a `text` property that is not a string.
-    // Fall through to the failed-attempt path below rather than throwing out of `.trim()`.
-    if (fork && "text" in fork && "usage" in fork && typeof fork.text === "string") {
-      return {
-        text: fork.text.trim(), providerId: "session:fork",
-        usage: { input_tokens: fork.usage.input_tokens, output_tokens: fork.usage.output_tokens, estimated: false },
-      };
-    }
-    const forkTextMalformed = Boolean(fork && "text" in fork && "usage" in fork);
-    const forkAttempt: UsageAttempt | undefined = fork && "usage" in fork
-      ? { providerId: "session:fork", usage: {
-        input_tokens: fork.usage.input_tokens,
-        output_tokens: fork.usage.output_tokens, estimated: false,
-      }, failed: true } : undefined;
-    const forkSpent = forkAttempt?.usage.output_tokens ?? 0;
-    if (forkSpent >= remainingTokens) {
-      const failure = new Error("spend cap") as SummaryFailure;
-      failure.usageAttempts = forkAttempt ? [forkAttempt] : [];
-      throw failure;
-    }
-    let fallback: SummaryAnswer;
-    try {
-      fallback = await completeSummary($, job, remainingTokens - forkSpent);
-    } catch (error) {
-      if (forkAttempt) {
-        const failure = (error instanceof Error ? error : new Error(String(error))) as SummaryFailure;
-        if (forkTextMalformed) failure.message = `model.fork: answer text was not a string; fallback: ${failure.message}`;
-        failure.usageAttempts = [forkAttempt, ...(failure.usageAttempts ?? [])];
-        throw failure;
-      }
-      throw error;
-    }
-    return forkAttempt ? { ...fallback, priorUsage: [forkAttempt] } : fallback;
+  if (job.kind !== "condensed") return completeSummary($, job, remainingTokens);
+  const fork = await $.model.fork({ prompt: `${job.system}\n\n${job.prompt}` }).catch(() => null);
+  if (fork && usableSummaryFork(fork)) {
+    return { text: fork.text.trim(), providerId: "session:fork",
+      usage: { input_tokens: fork.usage.input_tokens, output_tokens: fork.usage.output_tokens, estimated: false } };
   }
-  return completeSummary($, job, remainingTokens);
+  const forkTextMalformed = Boolean(fork && "text" in fork && "usage" in fork);
+  const forkAttempt: UsageAttempt | undefined = fork && "usage" in fork ? { providerId: "session:fork",
+    usage: { input_tokens: fork.usage.input_tokens, output_tokens: fork.usage.output_tokens, estimated: false }, failed: true } : undefined;
+  const forkSpent = forkAttempt?.usage.output_tokens ?? 0;
+  if (forkSpent >= remainingTokens) {
+    const failure = new Error("spend cap") as SummaryFailure;
+    failure.usageAttempts = forkAttempt ? [forkAttempt] : []; throw failure;
+  }
+  return fallbackSummary($, { job, remainingTokens: remainingTokens - forkSpent, forkAttempt, forkTextMalformed });
+}
+function usableSummaryFork(fork: Awaited<ReturnType<EngineInterface["model"]["fork"]>>): fork is Extract<typeof fork, { text: string }> {
+  return "text" in fork && "usage" in fork && typeof fork.text === "string";
+}
+async function fallbackSummary($: EngineInterface, context: { job: SummaryJob; remainingTokens: number; forkAttempt?: UsageAttempt; forkTextMalformed: boolean }): Promise<SummaryAnswer> {
+  const { job, remainingTokens, forkAttempt, forkTextMalformed } = context;
+  let answer: SummaryAnswer;
+  try { answer = await completeSummary($, job, remainingTokens); }
+  catch (error) { throw failedSummaryFallback(error, forkAttempt, forkTextMalformed); }
+  return forkAttempt ? { ...answer, priorUsage: [forkAttempt] } : answer;
+}
+function failedSummaryFallback(error: unknown, attempt: UsageAttempt | undefined, malformed: boolean): unknown {
+  if (!attempt) return error;
+  const failure = (error instanceof Error ? error : new Error(String(error))) as SummaryFailure;
+  if (malformed) failure.message = `model.fork: answer text was not a string; fallback: ${failure.message}`;
+  failure.usageAttempts = [attempt, ...(failure.usageAttempts ?? [])];
+  return failure;
 }
 
 /**
@@ -568,16 +573,18 @@ async function nextSummaryJob(
     // A malformed 200 backs off like a transport failure instead of stopping the poller.
     return { wait: POLL_BACKOFF_MS, shortPoll: true };
   }
+  return validatePolledJob($, job, { sessionId, worker });
+}
+function validatePolledJob($: EngineInterface, job: SummaryJob | undefined, { sessionId, worker }: { sessionId: string; worker: boolean }): PollOutcome {
   if (worker && !job) return { wait: 0 };
-  // Do not run a prompt belonging to another session, even on a malformed response.
-  if (!job || (worker ? job.pool !== true : job.pool === true || job.session_id !== sessionId)) {
-    $.ui.log("[lcm] discarded summary job for a different session");
-    return { wait: POLL_BACKOFF_MS };
+  if (!job || !summaryJobMatches(job, sessionId, worker)) {
+    $.ui.log("[lcm] discarded summary job for a different session"); return { wait: POLL_BACKOFF_MS };
   }
   return { job };
 }
-
-type SummaryBudget = { spent: number; cap: number };
+function summaryJobMatches(job: SummaryJob, sessionId: string, worker: boolean): boolean {
+  return worker ? job.pool === true : job.pool !== true && job.session_id === sessionId;
+}
 
 async function postSummaryAnswer($: EngineInterface, job: SummaryJob, route: string, body: unknown): Promise<void> {
   const sessionId = job.pool ? await $.session.id() : job.session_id;
@@ -591,8 +598,7 @@ async function postSummaryAnswer($: EngineInterface, job: SummaryJob, route: str
       noteHook(sessionId, "session.start", "summary-answer", "delivery", ...delivery(outcome));
       // Submissions are idempotent: a delivered answer with a lost response is
       // discarded on retry. Reuse the answer rather than spending on completion again.
-      if (outcome.body || !job.pool || outcome.httpStatus !== undefined &&
-          outcome.httpStatus < 500 && outcome.httpStatus !== 401 && outcome.httpStatus !== 429) return;
+      if (!retrySummaryDelivery(job, outcome)) return;
       if (attempt + 1 === WORKER_ANSWER_ATTEMPTS) return;
       if (outcome.httpStatus === 401) hostEnv = null;
       await summaryDelay($, POLL_BACKOFF_MS);
@@ -605,30 +611,40 @@ async function postSummaryAnswer($: EngineInterface, job: SummaryJob, route: str
   }
 }
 
+function retrySummaryDelivery(job: SummaryJob, outcome: PostOutcome): boolean {
+  if (outcome.body || !job.pool) return false;
+  if (outcome.httpStatus === undefined) return true;
+  return outcome.httpStatus >= 500 || outcome.httpStatus === 401 || outcome.httpStatus === 429;
+}
+
 /** Answers one job. Returns the output tokens it spent, or null when the cap was hit. */
 async function serveSummaryJob(
-  $: EngineInterface, job: SummaryJob, { spent, cap }: SummaryBudget, workerModel?: WorkerModel,
+  $: EngineInterface, job: SummaryJob, budget: SessionOutputBudget, workerModel?: WorkerModel,
 ): Promise<number | null> {
   const route = `/summarize-jobs/${encodeURIComponent(job.id)}`;
-  if (spent >= cap) {
+  const lease = await budget.reserveOrdinary(job.maxTokens, !workerModel && job.kind === "condensed");
+  if (!lease) {
     await postSummaryAnswer($, job, route, { error: "spend cap" });
     return null;
   }
   let answer: SummaryAnswer;
   try {
-    answer = workerModel ? await completeSummary($, job, cap - spent, workerModel)
-      : await answerSummary($, job, cap - spent);
+    answer = workerModel ? await completeSummary($, job, lease.allowance, workerModel)
+      : await answerSummary($, job, lease.allowance);
   } catch (error) {
     const attempts = (error as SummaryFailure)?.usageAttempts ?? [];
     const used = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
-    await postSummaryAnswer($, job, route, { error: spent + used > cap ? "spend cap" : error instanceof Error ? error.message : String(error),
+    lease.settle(used);
+    const overshot = budget.snapshot().overshoot > 0;
+    await postSummaryAnswer($, job, route, { error: overshot ? "spend cap" : error instanceof Error ? error.message : String(error),
       ...(attempts.length ? { usageAttempts: attempts } : {}) });
-    return spent + used > cap ? null : used;
+    return overshot ? null : used;
   }
   const attempts: UsageAttempt[] = [...(answer.priorUsage ?? []),
     { providerId: answer.providerId, usage: answer.usage, failed: false }];
   const totalOutput = attempts.reduce((sum, attempt) => sum + attempt.usage.output_tokens, 0);
-  if (spent + totalOutput > cap) {
+  lease.settle(totalOutput);
+  if (budget.snapshot().overshoot > 0) {
     await postSummaryAnswer($, job, route, { error: "spend cap", usageAttempts: attempts });
     return null;
   }
@@ -644,47 +660,47 @@ async function serveSummaryJob(
 }
 
 /** One request at a time also serializes jobs from concurrent daemon compactions. */
-async function pollSummaries($: EngineInterface, configuredCap: number): Promise<void> {
-  let cap = configuredCap;
-  let worker = false;
-  let workerModel: WorkerModel | undefined;
-  try { worker = await $.env.get("LCM_SUMMARIZE_WORKER") === "1"; }
-  catch { /* Older hosts without env.get retain normal-session serving. */ }
-  if (worker) {
-    const model = await $.env.get("LCM_SUMMARIZE_WORKER_MODEL") ?? "haiku";
-    if (model !== "haiku" && model !== "sonnet") {
-      $.ui.log("[lcm] worker model must be haiku or sonnet; worker stopped");
-      return;
-    }
-    workerModel = model;
-    const configuredWorkerCap = await $.env.get("LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS");
-    if (configuredWorkerCap !== undefined) {
-      const workerCap = Number(configuredWorkerCap);
-      if (!Number.isSafeInteger(workerCap) || workerCap < 0) {
-        $.ui.log("[lcm] worker output cap must be a non-negative integer; worker stopped");
-        return;
-      }
-      cap = workerCap;
-    }
+type ServingConfig = { cap: number; worker: boolean; workerModel?: WorkerModel };
+async function workerDeclared($: EngineInterface): Promise<boolean> {
+  try { return await $.env.get("LCM_SUMMARIZE_WORKER") === "1"; }
+  catch { return false; }
+}
+async function summaryServingConfig($: EngineInterface, configuredCap: number): Promise<ServingConfig | null> {
+  const worker = await workerDeclared($);
+  if (!worker) return { cap: configuredCap, worker };
+  const model = await $.env.get("LCM_SUMMARIZE_WORKER_MODEL") ?? "haiku";
+  if (model !== "haiku" && model !== "sonnet") {
+    $.ui.log("[lcm] worker model must be haiku or sonnet; worker stopped"); return null;
   }
-  if (cap === 0) return;
-  let spent = 0;
+  const setting = await $.env.get("LCM_SUMMARIZE_WORKER_MAX_OUTPUT_TOKENS");
+  const cap = setting === undefined ? configuredCap : Number(setting);
+  if (!Number.isSafeInteger(cap) || cap < 0) {
+    $.ui.log("[lcm] worker output cap must be a non-negative integer; worker stopped"); return null;
+  }
+  return { cap, worker, workerModel: model };
+}
+async function pollSummaries($: EngineInterface, configuredCap: number): Promise<void> {
+  const config = await summaryServingConfig($, configuredCap);
+  if (!config || config.cap === 0) return;
   let shortPoll = false;
   while (true) {
     if (shortPoll) await summaryDelay($, SHORT_POLL_PAUSE_MS);
-    const outcome = await nextSummaryJob($, await $.session.id(), shortPoll, worker);
+    const sessionId = await $.session.id();
+    const outcome = await nextSummaryJob($, sessionId, shortPoll, config.worker);
     if ("wait" in outcome) {
       shortPoll = outcome.shortPoll ?? shortPoll;
-      if (outcome.wait > 0) await summaryDelay($, outcome.wait);
-      continue;
+      await waitSummaryPoll($, outcome.wait); continue;
     }
-    const spentNow = await serveSummaryJob($, outcome.job, { spent, cap }, workerModel);
-    if (spentNow === null) return;
-    spent += spentNow;
-    if (worker && spent >= cap) {
-      return;
-    }
+    if (!await continueSummaryServing($, outcome.job, { sessionId, config })) return;
   }
+}
+async function continueSummaryServing($: EngineInterface, job: SummaryJob, { sessionId, config }: { sessionId: string; config: ServingConfig }): Promise<boolean> {
+  const budget = sharedSessionOutputBudget(sessionId, config.cap);
+  const spent = await serveSummaryJob($, job, budget, config.workerModel);
+  return spent !== null && (!config.worker || budget.snapshot().available > 0);
+}
+async function waitSummaryPoll($: EngineInterface, delay: number): Promise<void> {
+  if (delay > 0) await summaryDelay($, delay);
 }
 
 type On = Parameters<Register>[0];
@@ -715,55 +731,45 @@ async function retryWorkerEnrollment($: EngineInterface, sessionId: string, cwd:
 }
 
 /** Read the daemon's address and make sure it is listening before the first prompt. */
+async function awaitWorkerEnrollment($: EngineInterface, sessionId: string, cwd: string): Promise<Record<string, unknown> | null> {
+  let enrollment: Record<string, unknown> | null = null;
+  let waited = 0, delay = 250;
+  do {
+    enrollment = await postDaemon($, "/worker-session", { session_id: sessionId, cwd, client: "claude", declared: true, action: "check" }).catch(() => null);
+    if (workerConfirmed(enrollment) || waited >= 30_000) break;
+    const pause = Math.min(delay, 30_000 - waited);
+    await summaryDelay($, pause); waited += pause; delay = Math.min(delay * 2, 2_000);
+  } while (true);
+  return enrollment;
+}
+function workerConfirmed(enrollment: Record<string, unknown> | null): boolean {
+  return enrollment?.enrolled === true && typeof enrollment.warning === "string";
+}
+async function startupWorker($: EngineInterface, sessionId: string, summaryCap: number): Promise<boolean> {
+  if (!await workerDeclared($)) return true;
+  const cwd = await $.session.cwd(), enrollment = await awaitWorkerEnrollment($, sessionId, cwd);
+  if (workerConfirmed(enrollment)) { $.ui.log(`[lcm] ${enrollment!.warning}`); return true; }
+  $.ui.log(`[lcm] worker mode refused: ${enrollment?.reason ?? "command-hook enrollment could not be confirmed"}; retrying`);
+  void retryWorkerEnrollment($, sessionId, cwd, summaryCap).catch(error => { $.ui.log(`[lcm] worker enrollment retry stopped: ${String(error)}`); });
+  return false;
+}
+function probeSessionDaemon($: EngineInterface): void {
+  void readHostEnv($).then(({ port }) => {
+    const startedAt = Date.now();
+    return $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined,
+      (error: unknown) => isDaemonUnreachableError(error, startedAt) ? startDaemon($) : undefined);
+  });
+}
 function registerSessionStart(on: On, summaryCap: number): void {
   on("session.start", async ($, e, next) => {
-    // Awaited, unlike the health probe: a command hook that runs before the claim lands
-    // would record the same events this module is about to record.
     const sessionId = await $.session.id();
-    let declaredWorker = false;
-    try { declaredWorker = await $.env.get("LCM_SUMMARIZE_WORKER") === "1"; } catch { /* An unavailable declaration cannot enroll a worker. */ }
-    let workerEnrolled = false;
-    if (declaredWorker) {
-      // SessionStart command hooks are the sole registrar: they receive the native
-      // start reason and keep a stable process owner across function-hook reloads.
-      const cwd = await $.session.cwd();
-      let enrollment: Record<string, unknown> | null = null;
-      let waited = 0;
-      let delay = 250;
-      do {
-        enrollment = await postDaemon($, "/worker-session", {
-          session_id: sessionId, cwd, client: "claude", declared: true, action: "check",
-        }).catch(() => null);
-        workerEnrolled = enrollment?.enrolled === true && typeof enrollment.warning === "string";
-        if (workerEnrolled || waited >= 30_000) break;
-        const pause = Math.min(delay, 30_000 - waited);
-        await summaryDelay($, pause);
-        waited += pause;
-        delay = Math.min(delay * 2, 2_000);
-      } while (true);
-      if (workerEnrolled) $.ui.log(`[lcm] ${enrollment!.warning}`);
-      else {
-        $.ui.log(`[lcm] worker mode refused: ${enrollment?.reason ?? "command-hook enrollment could not be confirmed"}; retrying`);
-        void retryWorkerEnrollment($, sessionId, cwd, summaryCap).catch((error) => {
-          $.ui.log(`[lcm] worker enrollment retry stopped: ${String(error)}`);
-        });
-      }
-    }
+    const mayServe = await startupWorker($, sessionId, summaryCap);
     await claimSession($, sessionId, "session.start");
     await flushHookObservations($, sessionId);
-    void readHostEnv($).then(({ port }) => {
-      const startedAt = Date.now();
-      return $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined,
-        (error: unknown) => isDaemonUnreachableError(error, startedAt) ? startDaemon($) : undefined);
-    });
-    // The housekeeping the SessionStart command hook awaited. Nothing reads its result,
-    // and the session has no reason to wait for a prune.
-    void $.session.cwd().then((cwd) => postDaemon($, "/session-scavenge", { cwd }));
-    // Catch-up sweep for conversations of the same project a prior session left
-    // uncompacted (it ended without SessionEnd). The daemon selects, caps and
-    // fires the actual compaction requests; this call only triggers it.
-    void $.session.cwd().then((cwd) => postDaemon($, "/session-start-compact", { cwd, session_id: sessionId }));
-    if (!declaredWorker || workerEnrolled) startSummaryPoller($, summaryCap);
+    probeSessionDaemon($);
+    void $.session.cwd().then(cwd => postDaemon($, "/session-scavenge", { cwd }));
+    void $.session.cwd().then(cwd => postDaemon($, "/session-start-compact", { cwd, session_id: sessionId }));
+    if (mayServe) startSummaryPoller($, summaryCap);
     return next(e);
   });
 }

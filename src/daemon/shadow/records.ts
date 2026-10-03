@@ -1,7 +1,8 @@
 import { ScrubEngine } from "../../scrub.js";
+import { compactionHeaderItems, validCompactionHeader, mapCompactionHeaderText, type CompactionHeader } from "../../../hooks/compaction-header-schema.js";
 import { ShadowStoreError } from "./store.js";
 import { HTTP, HEADER_SECTIONS, digest, hash, object, safeId, nonnegative, validHeader, validUsage, validModelName,
-  type ArmRecord, type NativeRecord, type ShadowMessage, type ShadowHeader, type ShadowUsage } from "./types.js";
+  type ArmRecord, type NativeRecord, type ShadowMessage, type ShadowHeader, type StoredShadowHeader, type ShadowUsage } from "./types.js";
 
 const OUTCOMES = new Set(["answered", "skipped", "nothing-to-fork", "api-error", "empty-reply", "aborted", "invalid-output", "unavailable", "spend-cap", "unconfirmed"]);
 /** Correlation ids are preserved exactly or refused; redaction would change their identity. */
@@ -25,7 +26,8 @@ function sourcePointer(value: string | { quote: string }, scrubber: ScrubEngine)
   if (typeof value !== "string") return { quote: scrubber.scrub(value.quote) };
   const raw = /^\[raw:([A-Za-z0-9_-]+):(\d+)\]$/.exec(value);
   const summary = /^\[sum:(sum_[A-Za-z0-9_-]+)\]$/.exec(value);
-  const id = raw?.[1] ?? summary?.[1];
+  const excerpt = /^\[excerpt:([A-Za-z0-9_-]+)\]$/.exec(value);
+  const id = raw?.[1] ?? summary?.[1] ?? excerpt?.[1];
   if (!id) throw new ShadowStoreError("Invalid source pointer", HTTP.badRequest);
   correlationId(id, scrubber);
   if (raw && (!Number.isSafeInteger(Number(raw[2])) || Number(raw[2]) <= 0)) throw new ShadowStoreError("Invalid raw source id", HTTP.badRequest);
@@ -36,8 +38,9 @@ function supersessions(value: unknown, scrubber: ScrubEngine): string[] | undefi
   if (!Array.isArray(value)) throw new ShadowStoreError("Invalid supersessions", HTTP.badRequest);
   return value.map(id => correlationId(id, scrubber));
 }
-function header(value: unknown, scrubber: ScrubEngine): ShadowHeader | null {
+function header(value: unknown, scrubber: ScrubEngine): StoredShadowHeader | null {
   if (value === undefined || value === null) return null;
+  if (validCompactionHeader(value)) return scrubWorkingHeader(value, scrubber);
   if (!validHeader(value)) throw new ShadowStoreError("Invalid header", HTTP.badRequest);
   const result = { version: 1 } as ShadowHeader;
   for (const key of HEADER_SECTIONS) result[key] = value[key].map(item => ({
@@ -47,6 +50,11 @@ function header(value: unknown, scrubber: ScrubEngine): ShadowHeader | null {
     ...(item.supersedes !== undefined ? { supersedes: supersessions(item.supersedes, scrubber) } : {}),
   }));
   return result;
+}
+function scrubWorkingHeader(value: CompactionHeader, scrubber: ScrubEngine): CompactionHeader {
+  const pointers = compactionHeaderItems(value).flatMap(item => [...item.sources, ...("supersedes" in item ? item.supersedes ?? [] : [])]);
+  pointers.filter((pointer): pointer is string => typeof pointer === "string").forEach(pointer => sourcePointer(pointer, scrubber));
+  return mapCompactionHeaderText(value, text => scrubber.scrub(text));
 }
 function usage(value: unknown): ShadowUsage | null {
   if (value === undefined || value === null) return null;
@@ -76,12 +84,12 @@ export function nativeRecord(record: Record<string, unknown>, scrubber: ScrubEng
 export function armRecord(input: Record<string, unknown>, record: Record<string, unknown>, scrubber: ScrubEngine): ArmRecord {
   validateArmIdentity(input, record);
   correlationId(input.attempt_id, scrubber);
-  for (const value of [record.inputHash, record.promptHash]) correlationId(value, scrubber);
+  for (const value of [record.inputHash, record.promptHash]) if (value !== null) correlationId(value, scrubber);
   const attempts = usageAttempts(record.usageAttempts);
   const options = completionOptions(record.options);
   const classification = failureClassification(record, scrubber);
   return { ...basicRecord(record, scrubber), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
-    requestedModel: record.requestedModel as string, inputHash: record.inputHash as string, promptHash: record.promptHash as string, header: header(record.header, scrubber),
+    requestedModel: record.requestedModel as string, inputHash: record.inputHash as string | null, promptHash: record.promptHash as string | null, header: header(record.header, scrubber),
     usageAttempts: attempts, ...classification, ...(options ? { options } : {}),
   };
 }
@@ -136,5 +144,6 @@ function apiStatus(value: unknown): number | null {
 }
 
 function validatePromptHashes(record: Record<string, unknown>): void {
-  if (!hash(record.inputHash) || !hash(record.promptHash)) throw new ShadowStoreError("Invalid prompt hashes", HTTP.badRequest);
+  const known = (value: unknown) => hash(value) || value === null && record.outcome === "unavailable";
+  if (!known(record.inputHash) || !known(record.promptHash)) throw new ShadowStoreError("Invalid prompt hashes", HTTP.badRequest);
 }

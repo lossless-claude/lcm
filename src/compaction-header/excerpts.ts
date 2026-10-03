@@ -3,10 +3,11 @@ import type { ShadowOriginal } from "../daemon/shadow/types.js";
 export type UserExcerpt = { id: string; rawMessageId: number; text: string; spans: string[]; sources: string[] };
 const DEFAULT_EXCERPT_TARGET_BYTES = 4096;
 const GENERATED = /^(?:<command-name>|<command-message>|<local-command|<task-notification>|<system-reminder>|<cross-session-message|<agent-message|\[Request interrupted|Caveat:|Base directory for this skill|This session is being continued)/;
-const DIRECTIVE = /\b(n[ãa]o|nunca|sempre|pode|podes|autorizo|quero|faz|fa[çc]a|use|usa|pare|para de|prefiro|don'?t|never|always|must|please|stop|only|s[óo]|keep|run|implement|add|fix|create|remove|verify|check|wait|until|once)\b/i;
+const DIRECTIVE = /(?<![\p{L}\p{N}_])(?:n[ãa]o|nunca|sempre|pode|podes|autorizo|quero|faz|fa[çc]a|use|usa|pare|para de|prefiro|don['’]?t|do not|never|always|must|please|stop|only|s[óo]|keep|run|implement|add|fix|create|remove|verify|check|wait|until|once|authorize|permission|approve|grant|may|should|need|want|remember|ensure|yes|no|okay|sim|go ahead)(?![\p{L}\p{N}_])/iu;
 function humanSpans(row: ShadowOriginal): string[] {
   if (row.role !== "user" || row.origin !== "user" || !row.text.trim()) return [];
-  const command = /<command-name>([^<]*)<\/command-name>/.exec(row.text)?.[1];
+  const commandRoot = /^(?:<command-name>|<command-message>)/.test(row.text.trimStart());
+  const command = commandRoot ? /<command-name>([^<]*)<\/command-name>/.exec(row.text)?.[1] : undefined;
   if (command) {
     const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(row.text)?.[1];
     return args?.trim() ? [command, args] : [command];
@@ -24,16 +25,22 @@ export function assembleExcerpts(originals: readonly ShadowOriginal[], cutId: st
     const spans = humanSpans(row);
     return spans.length ? [{ id: `u${row.id}`, rawMessageId: row.id, text: spans.join("\n"), spans, sources: [`[raw:${cutId}:${row.id}]`] }] : [];
   });
-  const first = candidates[0], omitted = new Set<number>();
-  let excerpts = candidates;
+  return fitExcerpts(candidates, { targetBytes });
+}
+export function fitExcerpts(candidates: readonly UserExcerpt[], { targetBytes, preservedIds = [] }: { targetBytes: number; preservedIds?: readonly string[] }) {
+  const first = candidates[0], omitted = new Set<number>(), cited = new Set(preservedIds);
+  let excerpts = [...candidates];
   for (const candidate of candidates) {
     if (bytes(excerpts) <= targetBytes) break;
-    if (candidate === first || DIRECTIVE.test(candidate.text) || candidate.text.startsWith("/")) continue;
+    if (protectedExcerpt(candidate, first) || cited.has(candidate.id)) continue;
     omitted.add(candidate.rawMessageId);
     excerpts = excerpts.filter(row => row !== candidate);
   }
   const totalBytes = bytes(excerpts);
   return { excerpts, omittedIds: [...omitted], bytes: totalBytes, overflowBytes: Math.max(0, totalBytes - targetBytes) };
+}
+function protectedExcerpt(candidate: UserExcerpt, first: UserExcerpt | undefined): boolean {
+  return candidate === first || DIRECTIVE.test(candidate.text) || candidate.text.trimStart().startsWith("/");
 }
 /** Excerpt directives are spans of a verified human row, never model paraphrases. */
 export function checkExcerpts(excerpts: readonly UserExcerpt[], originals: readonly ShadowOriginal[], cutId: string): string[] {

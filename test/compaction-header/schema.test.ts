@@ -6,6 +6,10 @@ describe("versioned working-state header", () => {
   it("accepts the nine sections with provenance, scoped citations, supersession and fixes", () => {
     expect(validCompactionHeader(header())).toBe(true);
   });
+  it("rejects a raw pointer whose message id is outside the safe integer range", () => {
+    const value = header(); value.intent[0].sources = ["[raw:cut-a:999999999999999999999999]"];
+    expect(validCompactionHeader(value)).toBe(false);
+  });
   it.each(["missing section", "missing source", "restated instruction", "non-excerpt instruction", "missing provenance", "invalid state", "malformed supersession"])("refuses %s", defect => {
     const value: any = header();
     const mutations: Record<string, () => void> = {

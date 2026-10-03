@@ -7,6 +7,7 @@ import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
 import { projectDir, projectId, claudeTranscriptDirectory } from "../../src/daemon/project.js";
 import { objectHash, digest, type ShadowHeader } from "../../src/daemon/shadow/types.js";
 import { ScrubEngine } from "../../src/scrub.js";
+import { workingHeader } from "../compaction-header/fixtures.js";
 
 let root: string, cwd: string, paths: LcmPaths, output: string, transcripts: { cwd: string; sessionId: string; path: string }[];
 const directive = "Keep parser.ts and #42. Run npm test.";
@@ -70,6 +71,33 @@ function report() {
   const result = run(); expect(result.status, result.stderr).toBe(0); return JSON.parse(readFileSync(join(output, "metrics.json"), "utf8"));
 }
 describe("offline compaction shadow triage", () => {
+  it("measures version-2 headers with deterministic verbatim excerpts and source pointers", () => {
+    const arm = JSON.parse(readFileSync(file("arm-A-first.json"), "utf8"));
+    arm.header = workingHeader(); arm.text = JSON.stringify(arm.header);
+    writeFileSync(file("arm-A-first.json"), JSON.stringify(arm));
+    const snapshot = JSON.parse(readFileSync(file("snapshot.json"), "utf8"));
+    snapshot.window.items = [{ ordinal: 0, itemType: "message", summaryId: null, role: "user", messageId: 1, content: directive }];
+    writeFileSync(file("snapshot.json"), JSON.stringify(snapshot));
+    const manifest = JSON.parse(readFileSync(file("manifest.json"), "utf8")); manifest.snapshotHash = objectHash(snapshot);
+    writeFileSync(file("manifest.json"), JSON.stringify(manifest));
+    const measured = report().cuts[0].arms.A;
+    expect(measured.headerValid).toBe(true);
+    expect(measured.faithfulness.verbatimFailures).toBe(0);
+    expect(measured.faithfulness.unresolvedPointers).not.toContain("[excerpt:u1]");
+    expect(measured.probeRetention).toBe(1);
+    expect(measured.documentOverflowBytes).toBe(0);
+  });
+  it("rejects malformed identifiers in structured window items before writing a report", () => {
+    const arm = JSON.parse(readFileSync(file("arm-A-first.json"), "utf8")); arm.header = workingHeader();
+    writeFileSync(file("arm-A-first.json"), JSON.stringify(arm));
+    const snapshot = JSON.parse(readFileSync(file("snapshot.json"), "utf8"));
+    snapshot.window.items = [{ ordinal: 0, itemType: "summary", summaryId: "PRIVATE_WORD", role: null, content: "x".repeat(70000) }];
+    writeFileSync(file("snapshot.json"), JSON.stringify(snapshot));
+    const manifest = JSON.parse(readFileSync(file("manifest.json"), "utf8")); manifest.snapshotHash = objectHash(snapshot);
+    writeFileSync(file("manifest.json"), JSON.stringify(manifest));
+    const metrics = report();
+    expect(metrics.counts.invalidSources).toBe(1); expect(metrics.cuts).toEqual([]);
+  });
   it.each(["discovery", "manifest"])("uses recorded cwd before loading a transcript in a colliding directory (%s)", mode => {
     const allowed = project("demo-a"), excluded = project("demo/a");
     expect(claudeTranscriptDirectory(allowed)).toBe(claudeTranscriptDirectory(excluded));
