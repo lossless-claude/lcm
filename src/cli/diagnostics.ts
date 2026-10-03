@@ -83,10 +83,12 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
     .option("-v, --verbose", "Show per-conversation breakdown")
     .option("--pool", "Show connection pool statistics from the daemon")
     .option("--json", "Output structured JSON (use with --pool)")
+    .option("--warning-backtest", "Backtest environment warnings on the current project's stored calls (offline)")
     .helpOption(false)
     .option("-h, --help", "Show help")
     .action(async (opts) => {
       if (opts.help) await showHelpAndExit("stats");
+      if (opts.warningBacktest && (opts.pool || opts.json)) fail("--warning-backtest cannot be combined with --pool or --json");
 
       if (opts.pool) {
         const jsonFlag: boolean = opts.json ?? false;
@@ -134,6 +136,10 @@ export function registerDiagnosticsCommands(program: Command, deps: DiagnosticsC
       const verbose: boolean = opts.verbose ?? false;
       const { collectStats, printStats } = await import("../stats.js");
       printStats(collectStats(createLcmPaths(lcmHome())), verbose);
+      if (opts.warningBacktest) {
+        const { collectWarningBacktest, formatWarningBacktest } = await import("../warning-backtest.js");
+        console.log(formatWarningBacktest(collectWarningBacktest(process.cwd(), createLcmPaths(lcmHome()))));
+      }
     });
 
   // ─── doctor ────────────────────────────────────────────────────────────────

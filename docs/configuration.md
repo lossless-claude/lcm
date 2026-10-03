@@ -941,6 +941,21 @@ SELECT depth, COUNT(*) FROM summaries GROUP BY depth;
 SELECT summary_id, depth, token_count FROM summaries ORDER BY token_count DESC LIMIT 10;
 ```
 
+### Environment-warning measurement
+
+Run `lcm stats --warning-backtest` in a project directory to append its offline
+environment-warning report to the usual stats overview. Stats fits this measurement
+of stored memory; doctor is for installation health. The backtest runs directly in the
+CLI, without a daemon, a model call, migrations or writes to the project database.
+It scans stored calls only when this flag is supplied, since a large store may take
+time to order and walk. The flag cannot be combined with `--pool` or `--json`.
+
+The report includes point-in-time matches, precision, failure coverage, unmatched
+failures and excluded outcomes, plus total, average and maximum would-be bytes and
+estimated tokens per matching session. With no stored calls, the measurements are
+unknown. Warnings remain off; nothing is injected or denied. See
+[the replay rules and cost accounting](passive-learning.md#environment-warning-backtest).
+
 ### Backup
 
 The database is a single file per project. Back it up with:

@@ -11,7 +11,8 @@ it("opens every writable project handle through the configured connection factor
       const path = join(entry.parentPath, entry.name);
       if (path === join(root, "src", "db", "connection.ts")) return [];
       return readFileSync(path, "utf8").split("\n").flatMap((line, index) =>
-        /new DatabaseSync\(/.test(line) && !/readOnly: true|groupIndexPath\(paths\)|["']:memory:["']/.test(line)
+        // An empty SQLite filename opens a private temporary database, not a project store.
+        /new DatabaseSync\(/.test(line) && !/readOnly: true|groupIndexPath\(paths\)|["']:memory:["']|new DatabaseSync\(["']["']\)/.test(line)
           ? [`${relative(root, path)}:${index + 1}`] : []);
     });
   expect(offenders).toEqual([]);
