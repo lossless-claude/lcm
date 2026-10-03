@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { workingHeader } from "../compaction-header/fixtures.js";
 
+const SESSION_OUTPUT_CAP = 100;
 const usage = { input_tokens: 10, output_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 7 };
 const messages = [{ role: "user", text: "Keep working.", handle: "h1", toolUses: [] }, { role: "assistant", text: "In progress", handle: "h2", toolUses: [] }];
 const compact = () => ({ trigger: "manual", instructions: "Keep the plan", messages: structuredClone(messages) });
@@ -18,23 +19,23 @@ async function setup(enabled: boolean | null = true) {
     http: { fetch: vi.fn(async (url: string, init?: any) => {
       const route = new URL(url).pathname, body = init?.body ? JSON.parse(init.body) : {};
       posts.push({ route, body });
-      const response = route.endsWith("/start") ? { admitted: true, cut: { cutId: body.cut_id, snapshotHash: "d".repeat(64) }, snapshot: { sourceHash: "e".repeat(64) }, job }
+      const response = route.endsWith("/start") ? { admitted: true, cut: { cutId: body.cut_id, snapshotHash: "d".repeat(64) }, snapshot: { sourceHash: "event".repeat(64) }, job }
         : route.endsWith("/native") ? { stored: true, job } : { stored: true };
       return { ok: true, status: 200, text: JSON.stringify(response) };
     }) },
   };
   const { register } = await import("../../hooks/lcm-hooks.js");
   register(((event: string, ...args: any[]) => { handlers.set(event, [...handlers.get(event) ?? [], args.at(-1)]); }) as any,
-    { sessionSummarizerMaxOutputTokens: 100, ...(enabled === null ? {} : { compactionShadow: enabled }) });
+    { sessionSummarizerMaxOutputTokens: SESSION_OUTPUT_CAP, ...(enabled === null ? {} : { compactionShadow: enabled }) });
   async function fire(event: string, input: any, next = vi.fn(async (value: any) => value)) {
     const chain = handlers.get(event) ?? [];
     const invoke = (index: number, value: any): any => index === chain.length ? next(value) : chain[index](engine, value, Object.assign((updated: any) => invoke(index + 1, updated), { signal: (next as any).signal }));
     return invoke(0, input);
   }
   async function append(uuid = "boundary") {
-    const e = { uuid, door: "response", origin: { kind: "model", model: "session-model" }, message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "In progress" }] } };
-    const result = { uuid, message: e.message };
-    const next = vi.fn(async () => result); expect(await fire("session.append", e, next)).toBe(result); expect(next).toHaveBeenCalledWith(e);
+    const event = { uuid, door: "response", origin: { kind: "model", model: "session-model" }, message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "In progress" }] } };
+    const result = { uuid, message: event.message };
+    const next = vi.fn(async () => result); expect(await fire("session.append", event, next)).toBe(result); expect(next).toHaveBeenCalledWith(event);
   }
   return { engine, posts, handlers, fire, append };
 }
@@ -45,21 +46,25 @@ describe("opt-in compaction shadow hook", () => {
     expect(config).toMatchObject({ type: "boolean", default: false }); expect(config.description).toMatch(/substantial.*spend/i);
   });
   it.each([false, null])("does no shadow request or model work with option %s", async enabled => {
-    const harness = await setup(enabled), e = compact(), result = nativeResult(), next = vi.fn(async () => result);
-    await harness.append(); expect(await harness.fire("session.compact", e, next)).toBe(result);
+    const harness = await setup(enabled), event = compact(), result = nativeResult(), next = vi.fn(async () => result);
+    await harness.append(); expect(await harness.fire("session.compact", event, next)).toBe(result);
     expect(next).toHaveBeenCalledTimes(1); expect(harness.posts).toEqual([]); expect(harness.engine.model.fork).not.toHaveBeenCalled(); expect(harness.engine.model.complete).not.toHaveBeenCalled();
   });
   it("starts fork before native, preserves input/result identity and pairs every arm with the cut", async () => {
-    const harness = await setup(), order: string[] = [], e = compact(), result = nativeResult();
+    const harness = await setup(), order: string[] = [], event = compact(), result = nativeResult();
     harness.engine.model.fork.mockImplementation(async () => { order.push("fork"); return { isAnswered: true, text: JSON.stringify(workingHeader()), usage }; });
-    await harness.append(); const next = vi.fn(async (input: any) => { order.push("next"); expect(input).toBe(e); return result; });
-    expect(await harness.fire("session.compact", e, next)).toBe(result);
+    await harness.append(); const next = vi.fn(async (input: any) => { order.push("next"); expect(input).toBe(event); return result; });
+    expect(await harness.fire("session.compact", event, next)).toBe(result);
     expect(next).toHaveBeenCalledTimes(1); expect(order).toEqual(["fork", "next"]);
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
     const admission = harness.posts.find(post => post.route.endsWith("/start"))!;
-    expect(admission.body).toMatchObject({ boundary_uuid: "boundary", model: "session-model", instructions: e.instructions });
+    expect(admission.body).toMatchObject({ boundary_uuid: "boundary", model: "session-model", instructions: event.instructions });
     expect(harness.posts.find(post => post.route.endsWith("/native"))!.body.record).toMatchObject({ text: "  native summary\n", tail: [{ handle: "h2" }], fidelity: "verified" });
-    for (const post of harness.posts.filter(post => post.route.endsWith("/arm"))) expect(post.body.cut_id).toBe(admission.body.cut_id);
+    for (const post of harness.posts.filter(post => post.route.endsWith("/arm"))) {
+      expect(post.body.cut_id).toBe(admission.body.cut_id);
+      expect(post.body.record.usage).toEqual(usage);
+      expect(post.body.record.usageAttempts).toEqual([]);
+    }
     expect(harness.posts.find(post => post.body.arm === "A")!.body.record.timings).toMatchObject({ setupMs: expect.any(Number), nativeMs: expect.any(Number), pairingMs: expect.any(Number), hookMs: expect.any(Number) });
   });
   it.each([{ trigger: "precompute" }, { agentId: "subagent" }, { agentId: "fork-loop" }])("passes ineligible loops through unchanged (%j)", async change => {
@@ -106,10 +111,12 @@ describe("opt-in compaction shadow hook", () => {
     expect(harness.posts.filter(post => post.route.startsWith("/compaction-shadow"))).toHaveLength(before);
     expect(harness.engine.model.fork).not.toHaveBeenCalled();
   });
-  it("cancels unfinished arms on unload after native returned", async () => {
-    const harness = await setup(); harness.engine.model.fork.mockImplementation(() => new Promise<any>(() => {}));
+  it("cancels queued arms on unload and retains in-flight host outcomes", async () => {
+    const harness = await setup(), fork = Promise.withResolvers<any>(); harness.engine.model.fork.mockImplementation(() => fork.promise);
     await harness.append(); await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
     await harness.fire("session.end", { sessionId: "session-a", reason: "other" });
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(2));
+    fork.resolve({ isAnswered: false, reason: "aborted", usage });
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
     expect(harness.posts.filter(post => post.route.endsWith("/arm")).every(post => post.body.record.outcome === "aborted")).toBe(true);
   });
@@ -134,7 +141,7 @@ describe("opt-in compaction shadow hook", () => {
   it("records cap refusal for each arm without making a model call", async () => {
     const harness = await setup(); await harness.append();
     const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
-    (await sharedSessionOutputBudget("session-a", 100).reserveComplete(100))!.settle(100);
+    (await sharedSessionOutputBudget("session-a", SESSION_OUTPUT_CAP).reserveComplete(SESSION_OUTPUT_CAP))!.settle(SESSION_OUTPUT_CAP);
     await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
     expect(harness.posts.filter(post => post.route.endsWith("/arm")).every(post => post.body.record.outcome === "spend-cap")).toBe(true);
@@ -159,9 +166,9 @@ describe("opt-in compaction shadow hook", () => {
     const result = nativeResult(); expect(await harness.fire("session.compact", compact(), vi.fn(async () => result))).toBe(result);
   });
   it("preserves a native rejection after an abort and records unavailable native evidence", async () => {
-    const harness = await setup(); await harness.append(); const abort = new AbortController(), original = new Error("native aborted");
-    harness.engine.model.fork.mockImplementation(() => new Promise<any>(() => {}));
-    const next = Object.assign(vi.fn(async () => { abort.abort(); throw original; }), { signal: abort.signal });
+    const harness = await setup(); await harness.append(); const abort = new AbortController(), original = new Error("native aborted"), fork = Promise.withResolvers<any>();
+    harness.engine.model.fork.mockImplementation(() => fork.promise);
+    const next = Object.assign(vi.fn(async () => { abort.abort(); fork.resolve({ isAnswered: false, reason: "aborted", usage }); throw original; }), { signal: abort.signal });
     await expect(harness.fire("session.compact", compact(), next)).rejects.toBe(original);
     expect(harness.posts.find(post => post.route.endsWith("/native"))!.body.record.fidelity).toBe("aborted");
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
@@ -182,7 +189,7 @@ describe("opt-in compaction shadow hook", () => {
     const next = vi.fn(async () => {
       event.messages[1].text = "mutated after entry";
       await harness.fire("session.append", { uuid: "summary-row", door: "compaction", origin: { kind: "engine" }, message: { type: "user", role: "user", content: [{ type: "text", text: result.messages[0].text }] } },
-        vi.fn(async (e: any) => ({ uuid: e.uuid, message: e.message })));
+        vi.fn(async (event: any) => ({ uuid: event.uuid, message: event.message })));
       return result;
     });
     expect(await harness.fire("session.compact", event, next)).toBe(result);
@@ -206,9 +213,11 @@ describe("opt-in compaction shadow hook", () => {
     harness.engine.model.fork.mockImplementation(() => fork.promise);
     await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
     await harness.fire("session.end", { sessionId: "session-a", reason: "other" });
-    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(2));
     fork.resolve({ isAnswered: true, text: JSON.stringify(workingHeader()), usage });
-    await new Promise(resolve => setTimeout(resolve, 10));
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    expect(sharedSessionOutputBudget("session-a", SESSION_OUTPUT_CAP).snapshot()).toMatchObject({ spent: usage.output_tokens, usageUnknown: false, reserved: 0 });
     expect(harness.engine.model.complete).not.toHaveBeenCalled();
   });
   it("does no model work for an already aborted dispatch", async () => {
@@ -223,10 +232,121 @@ describe("opt-in compaction shadow hook", () => {
     const harness = await setup(); harness.engine.session.id.mockRejectedValue(new Error("identity unavailable"));
     await harness.append(); expect(harness.posts).toEqual([]);
   });
+  it.each(["manual", "auto", "plugin"])("admits each real main-session trigger %s", async trigger => {
+    const harness = await setup(); await harness.append();
+    await harness.fire("session.compact", { ...compact(), trigger }, vi.fn(async () => nativeResult()));
+    expect(harness.posts.find(post => post.route.endsWith("/start"))!.body.trigger).toBe(trigger);
+  });
+  it("retains fork overshoot and refuses the bounded pair without substitution", async () => {
+    const harness = await setup(); await harness.append();
+    const overspent = { ...usage, output_tokens: 103 };
+    harness.engine.model.fork.mockResolvedValue({ isAnswered: true, text: JSON.stringify(workingHeader()), usage: overspent });
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    expect(harness.posts.find(post => post.body.arm === "A")!.body.record).toMatchObject({ usage: overspent, budget: { overshoot: 3 } });
+    expect(harness.posts.filter(post => ["B", "C"].includes(post.body.arm)).every(post => post.body.record.outcome === "spend-cap")).toBe(true);
+    expect(harness.engine.model.complete).not.toHaveBeenCalled();
+  });
+  it("keeps pending outcomes bound to their cut across a session change", async () => {
+    const harness = await setup(), first = Promise.withResolvers<any>(), second = Promise.withResolvers<any>(); await harness.append("first-boundary");
+    harness.engine.model.fork.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    harness.engine.session.id.mockResolvedValue("session-b"); harness.engine.session.cwd.mockResolvedValue("/other"); harness.engine.session.model.mockResolvedValue("second-model");
+    await harness.append("second-boundary"); await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    second.resolve({ isAnswered: true, text: JSON.stringify(workingHeader()), usage });
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    first.resolve({ isAnswered: true, text: JSON.stringify(workingHeader()), usage });
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(6));
+    const starts = harness.posts.filter(post => post.route.endsWith("/start"));
+    for (const post of harness.posts.filter(post => post.route.endsWith("/arm"))) {
+      const admission = starts.find(start => start.body.cut_id === post.body.cut_id)!;
+      expect(post.body).toMatchObject({ session_id: admission.body.session_id, cwd: admission.body.cwd });
+      if (post.body.arm !== "C") expect(post.body.record.requestedModel).toBe(admission.body.model);
+    }
+    expect(harness.engine.session.model).toHaveBeenCalledTimes(2);
+    expect(harness.engine.model.complete.mock.calls.map(([request]) => request.model)).toEqual(["second-model", "sonnet", "session-model", "sonnet"]);
+  });
+  it.each(["text", "role", "order", "handle"])("records unverified native tail on changed %s", async field => {
+    const harness = await setup(); await harness.append(); const result = nativeResult();
+    const mutate: Record<string, () => void> = {
+      text: () => { result.messages[1].text = "after-cut text"; }, role: () => { result.messages[1].role = "user"; },
+      order: () => { result.messages = [result.messages[0], structuredClone(messages[1]), structuredClone(messages[0])]; },
+      handle: () => { result.messages[1].handle = "unknown"; },
+    }; mutate[field]();
+    expect(await harness.fire("session.compact", compact(), vi.fn(async () => result))).toBe(result);
+    expect(harness.posts.find(post => post.route.endsWith("/native"))!.body.record.outcome).toBe("unavailable");
+    expect(harness.engine.model.complete).not.toHaveBeenCalled();
+  });
+  it.each(["denied", "rejected", "subagent", "system"])("keeps the main boundary after an excluded append (%s)", async mode => {
+    const harness = await setup(); await harness.append("main-boundary");
+    const event = { uuid: "ignored", door: "response", message: { type: "assistant", role: mode === "system" ? undefined : "assistant", content: [{ type: "text", text: "ignored" }] }, ...(mode === "subagent" ? { agentId: "agent" } : {}) };
+    const result = mode === "denied" ? { deny: "blocked" } : { uuid: event.uuid, message: event.message };
+    const next = vi.fn(async () => { if (mode === "rejected") throw new Error("append rejected"); return result; });
+    if (mode === "rejected") await expect(harness.fire("session.append", event, next)).rejects.toThrow("append rejected");
+    else expect(await harness.fire("session.append", event, next)).toBe(result);
+    expect(next).toHaveBeenCalledTimes(1);
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    expect(harness.posts.find(post => post.route.endsWith("/start"))!.body.boundary_uuid).toBe("main-boundary");
+  });
+  it("calls a worker's throwing native continuation only once", async () => {
+    const harness = await setup(); harness.engine.env.get.mockResolvedValue("1");
+    const error = new Error("native failed"), next = vi.fn(() => { throw error; });
+    await expect(harness.fire("session.compact", compact(), next)).rejects.toBe(error);
+    expect(next).toHaveBeenCalledTimes(1); expect(harness.posts).toEqual([]);
+  });
+  it("owns dispatch abort through the awaited native pairing write", async () => {
+    const harness = await setup(), abort = new AbortController(), fork = Promise.withResolvers<any>(); await harness.append();
+    harness.engine.model.fork.mockImplementation(() => fork.promise);
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => { if (url.endsWith("/native")) { abort.abort(); fork.resolve({ isAnswered: false, reason: "aborted", usage }); } return fetch(url, init); });
+    const result = nativeResult(), next = Object.assign(vi.fn(async () => result), { signal: abort.signal });
+    expect(await harness.fire("session.compact", compact(), next)).toBe(result);
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    expect(harness.posts.filter(post => post.route.endsWith("/arm")).every(post => post.body.record.outcome === "aborted")).toBe(true);
+    expect(harness.engine.model.complete).not.toHaveBeenCalled();
+  });
+  it("preserves late host usage from a fork after session end", async () => {
+    const harness = await setup(), fork = Promise.withResolvers<any>(); await harness.append();
+    harness.engine.model.fork.mockImplementation(() => fork.promise);
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    await harness.fire("session.end", { sessionId: "session-a", reason: "other" });
+    fork.resolve({ isAnswered: false, reason: "aborted", usage });
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    expect(harness.posts.find(post => post.body.arm === "A")!.body.record).toMatchObject({ outcome: "aborted", usage });
+  });
+  it("preserves usage from completions already in flight at session end", async () => {
+    const harness = await setup(), complete = Promise.withResolvers<any>(); await harness.append();
+    harness.engine.model.complete.mockImplementation(() => complete.promise);
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    await vi.waitFor(() => expect(harness.engine.model.complete).toHaveBeenCalledTimes(2));
+    await harness.fire("session.end", { sessionId: "session-a", reason: "other" });
+    complete.resolve({ isAnswered: false, reason: "aborted", usage });
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    for (const arm of ["B", "C"]) expect(harness.posts.find(post => post.body.arm === arm)!.body.record).toMatchObject({ outcome: "aborted", usage });
+  });
+  it("freezes the observed boundary before host identity reads settle", async () => {
+    const harness = await setup(), identity = Promise.withResolvers<string>(); await harness.append("at-entry");
+    harness.engine.session.id.mockReturnValueOnce(identity.promise);
+    const pending = harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    await harness.append("after-entry"); identity.resolve("session-a"); await pending;
+    expect(harness.posts.find(post => post.route.endsWith("/start"))!.body.boundary_uuid).toBe("at-entry");
+  });
+  it("does not start models when clear ends the cut during admission", async () => {
+    const harness = await setup(), gate = Promise.withResolvers<void>(); await harness.append();
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => { const response = await fetch(url, init); if (url.endsWith("/start")) await gate.promise; return response; });
+    const result = nativeResult(), next = vi.fn(async () => result), pending = harness.fire("session.compact", compact(), next);
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/start"))).toHaveLength(1));
+    await harness.fire("classic.SessionStart", { session_id: "session-a", source: "clear" }); gate.resolve();
+    expect(await pending).toBe(result); expect(next).toHaveBeenCalledTimes(1);
+    expect(harness.engine.model.fork).not.toHaveBeenCalled(); expect(harness.engine.model.complete).not.toHaveBeenCalled();
+  });
   it("captures a boundary before an append has settled while preserving its returned object", async () => {
     const harness = await setup(), stored = Promise.withResolvers<any>();
     const event = { uuid: "before-flush", door: "response", origin: { kind: "model", model: "session-model" }, message: { type: "assistant", role: "assistant", content: [{ type: "text", text: "pending" }] } };
-    const pending = harness.fire("session.append", event, vi.fn(() => stored.promise));
+    const enteredCore = Promise.withResolvers<void>();
+    const pending = harness.fire("session.append", event, vi.fn(() => { enteredCore.resolve(); return stored.promise; }));
+    await enteredCore.promise;
     await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
     expect(harness.posts.find(post => post.route.endsWith("/start"))!.body.boundary_uuid).toBe("before-flush");
     const result = { uuid: event.uuid, message: event.message }; stored.resolve(result); expect(await pending).toBe(result);

@@ -237,9 +237,9 @@ After native resolves, the observer writes `/compaction-shadow/native` and retur
 that same result object. It never waits for header models or `/arm` writes, never
 installs a document, and preserves downstream rejection. Ambiguous summaries or
 unmatched tails are recorded as fidelity outcomes. Background callbacks carry the
-frozen cut identity even after the session changes. Abort/end record unfinished
-arms and prevent queued completions from starting; they cannot guarantee provider
-cancellation or promise survival after host unload. Scheduling, actual append
+frozen cut identity even after the session changes. Abort/end prevent queued completions from starting. Already-running arms retain
+the host's eventual outcome and usage; lost promises leave incomplete cuts. Provider
+cancellation or promise survival after host unload is not guaranteed. Scheduling, actual append
 flush and hook/JSONL text parity require live verification. See
 [shadow artifacts](design/compaction-shadow.md) for pairing and stored fields.
 

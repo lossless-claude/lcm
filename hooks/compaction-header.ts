@@ -17,7 +17,7 @@ type OutcomeMetadata = {
   citations?: HeaderCitations;
 };
 export type HeaderOutcome = OutcomeMetadata & ({ outcome: "answered"; text: string; header: CompactionHeader } | { outcome: HeaderFailure; text: string; header: null });
-type ExecutionContext = { model: SessionModelAtCut; budget: SessionOutputBudget };
+type ExecutionContext = { model: SessionModelAtCut; budget: SessionOutputBudget; canStart?: () => boolean };
 export interface HeaderExecutor {
   captureModel($: HeaderEngine): Promise<SessionModelAtCut>;
   fork($: HeaderEngine, job: HeaderCall, context: ExecutionContext): Promise<HeaderOutcome>;
@@ -100,14 +100,16 @@ function unavailablePair(model: SessionModelAtCut, queuedAt: number, { job, outc
   const startedAt = Date.now();
   return { B: failure({ arm: "B", model: model.id, job, queuedAt, startedAt }, outcome), C: failure({ arm: "C", model: "sonnet", job, queuedAt, startedAt }, outcome) };
 }
-export async function executeHeaderPair($: HeaderEngine, ready: Promise<HeaderCall>, { model, budget }: ExecutionContext): Promise<{ B: HeaderOutcome; C: HeaderOutcome }> {
+export async function executeHeaderPair($: HeaderEngine, ready: Promise<HeaderCall>, { model, budget, canStart }: ExecutionContext): Promise<{ B: HeaderOutcome; C: HeaderOutcome }> {
   const queuedAt = Date.now();
   let job: HeaderCall;
   try { const input = await ready; job = Object.freeze({ ...input, evidence: freezeCitationEvidence(input.evidence) }); }
-  catch { return unavailablePair(model, queuedAt); }
+  catch { return unavailablePair(model, queuedAt, { outcome: canStart?.() === false ? "aborted" : "unavailable" }); }
   const requested = job.maxTokens ?? DEFAULT_HEADER_MAX_TOKENS;
   if (!Number.isSafeInteger(requested) || requested <= 0 || requested > MAX_COMPLETION_TOKENS) return unavailablePair(model, queuedAt, { job });
+  if (canStart?.() === false) return unavailablePair(model, queuedAt, { job, outcome: "aborted" });
   const lease = await budget.reserveComplete(requested, CLEAN_HEADER_ARMS);
+  if (canStart?.() === false) { lease?.settle(0); return unavailablePair(model, queuedAt, { job, outcome: "aborted" }); }
   if (!lease) return unavailablePair(model, queuedAt, { job, outcome: "spend-cap" });
   const common = { job, queuedAt, startedAt: Date.now(), maxTokens: lease.maxTokens! };
   const [B, C] = await Promise.all([completeMember($, { ...common, arm: "B", model: model.id }), completeMember($, { ...common, arm: "C", model: "sonnet" })]);

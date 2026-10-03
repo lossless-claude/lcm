@@ -22,8 +22,9 @@ Only real main-session manual, auto and plugin cuts are admitted. Precompute,
 subagent/fork and dedicated worker loops pass through; A cannot recursively sample
 its own compaction. The append observer remembers the last model-visible UUID and
 resets on clear, resume, branch and session end. Unavailable boundaries are recorded
-without guessing. Entry freezes session/cwd/model, trigger, instructions and all
-original engine messages before awaiting the host. Cut nonce and snapshot hash bind
+without guessing. Entry freezes the observed boundary, session/cwd/model, trigger, instructions
+and all original engine messages before awaiting the host. A lifecycle epoch
+prevents an admission still pending at clear/resume/branch from starting models. Cut nonce and snapshot hash bind
 every asynchronous callback, independently of later session changes.
 
 The hook awaits admission, calls the original `next(e)` exactly once unchanged,
@@ -31,8 +32,10 @@ awaits native pairing, and returns the identical native object. A starts before
 native; B/C are owned background tasks waiting for the native remainder. No model
 completion or arm delivery is awaited after native returns. Failure/refusal stays
 in diagnostics or artifact outcomes and never replaces native. Native rejection is
-re-thrown unchanged after recording it. Abort/session end record unfinished arms
-and prohibit queued provider calls; background promise survival is not established
+re-thrown unchanged after recording it. Abort/session end prohibit queued provider calls and record unstarted arms.
+Already-running calls retain the host's eventual outcome and usage; a lost promise
+leaves an incomplete cut rather than a fabricated terminal result. Background
+promise survival is not established
 by ownership in a module registry.
 
 Summary extraction requires exactly one new message at index zero relative to
@@ -205,7 +208,10 @@ complete hidden tool/media state kept by an opaque engine handle.
 Optional prices have a `version` and `models` map keyed by reported requested model;
 each model has `inputPerMillion`, `outputPerMillion`, `cacheReadPerMillion` and
 `cacheCreationPerMillion`. Estimates retain failed-attempt spending and exact cache
-counters. Unknown usage/model/rates remain unknown. Native cost needs reported
+counters. The primary usage describes the arm call once; `usageAttempts` adds
+only other attempts, never a duplicate of the primary call. Hook overhead excludes
+native duration and reports p50/p95 over recorded cuts; absent or conflicting
+timings remain unknown. Unknown usage/model/rates remain unknown. Native cost needs reported
 charge evidence; it is not inferred from another arm's model. DAG/retrieval cost
 attribution is unavailable, so this tool cannot establish an amortized-cost gate.
 

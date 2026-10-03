@@ -87,6 +87,15 @@ describe("offline compaction shadow triage", () => {
     expect(measured.probeRetention).toBe(1);
     expect(measured.documentOverflowBytes).toBe(0);
   });
+  it("reports hook overhead independently of native and model duration", () => {
+    const arm = JSON.parse(readFileSync(file("arm-A-first.json"), "utf8"));
+    arm.timings = { setupMs: 2, nativeMs: 10, pairingMs: 3, hookMs: 15 }; arm.queueMs = 4;
+    writeFileSync(file("arm-A-first.json"), JSON.stringify(arm));
+    const metrics = report();
+    expect(metrics.cuts[0].hookAddedMs).toBe(5); expect(metrics.cuts[0].arms.A.queueMs).toBe(4);
+    expect(metrics.hookLatency).toEqual({ recordedCuts: 1, unknownCuts: 0, p50Ms: 5, p95Ms: 5 });
+    expect(readFileSync(join(output, "report.md"), "utf8")).toContain("Hook added latency: 1 recorded cuts, 0 unknown; p50 5 ms, p95 5 ms");
+  });
   it("rejects malformed identifiers in structured window items before writing a report", () => {
     const arm = JSON.parse(readFileSync(file("arm-A-first.json"), "utf8")); arm.header = workingHeader();
     writeFileSync(file("arm-A-first.json"), JSON.stringify(arm));

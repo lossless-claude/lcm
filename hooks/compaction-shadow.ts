@@ -18,11 +18,17 @@ type Cut = {
   ready: Deferred<HeaderCall>; paired: Deferred<void>; cancel: Deferred<void>; messages: readonly SessionMessage[]; appended: { uuid: string; text: string }[];
   cancelled: boolean; complete?: HeaderCall; startedAt: number; setupMs: number; nativeMs: number; pairingMs: number; hookMs: number;
 };
+type BoundaryEpoch = { uuid: string; epoch: number };
 export class ShadowSessionState {
+  private epochs = new Map<string, number>();
   private boundaries = new Map<string, string>();
   private cuts = new Map<string, Set<Cut>>();
   private tasks = new Set<Promise<void>>();
   boundary(sessionId: string): string | undefined { return this.boundaries.get(sessionId); }
+  epoch(sessionId: string): number { return this.epochs.get(sessionId) ?? 0; }
+  freezeBoundaries(): ReadonlyMap<string, BoundaryEpoch> {
+    return new Map([...this.boundaries].map(([sessionId, uuid]) => [sessionId, { uuid, epoch: this.epoch(sessionId) }]));
+  }
   restore(sessionId: string, uuid: string, previous?: string): void {
     if (this.boundaries.get(sessionId) !== uuid) return;
     if (previous === undefined) this.boundaries.delete(sessionId); else this.boundaries.set(sessionId, previous);
@@ -32,8 +38,9 @@ export class ShadowSessionState {
     if (door === "compaction") this.cuts.get(sessionId)?.forEach(cut => cut.appended.push({ uuid, text }));
   }
   reset(sessionId: string): void {
+    this.epochs.set(sessionId, this.epoch(sessionId) + 1);
     this.boundaries.delete(sessionId);
-    this.cuts.get(sessionId)?.forEach(cut => { cut.cancelled = true; cut.cancel.resolve(); cut.ready.reject(new Error("session ended")); });
+    this.cuts.get(sessionId)?.forEach(cancelCut);
   }
   add(cut: Cut): void { const cuts = this.cuts.get(cut.sessionId) ?? new Set<Cut>(); cuts.add(cut); this.cuts.set(cut.sessionId, cuts); }
   remove(cut: Cut): void { this.cuts.get(cut.sessionId)?.delete(cut); }
@@ -41,6 +48,9 @@ export class ShadowSessionState {
     const handled = task.catch(() => { transport.observe("unconfirmed", "background"); }).finally(() => this.tasks.delete(handled));
     this.tasks.add(handled);
   }
+}
+function cancelCut(cut: Cut): void {
+  cut.cancelled = true; cut.cancel.resolve(); cut.ready.reject(new Error("dispatch ended"));
 }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 function descriptors(messages: readonly SessionMessage[]): Message[] { return messages.map(row => ({ role: row.role, text: row.text, ...(row.handle ? { handle: row.handle } : {}) })); }
@@ -55,21 +65,12 @@ type Invocation = { event: SessionCompactInput; next(event: SessionCompactInput)
 export async function runCompactionShadow(engine: ShadowEngine, call: Invocation, transport: ShadowTransport): Promise<SessionCompactResult> {
   if (call.event.agentId !== undefined || call.event.trigger === "precompute") return call.next(call.event);
   const startedAt = performance.now();
-  let cut: Cut | undefined;
-  try {
-    const frozen = structuredClone(call.event);
-    const [identity, worker] = await Promise.all([
-      Promise.all([engine.session.id(), engine.session.cwd(), captureHeaderModel(engine)]),
-      engine.env.get("LCM_SUMMARIZE_WORKER").catch(() => undefined),
-    ]);
-    if (worker === "1") return call.next(call.event);
-    cut = await admit({ identity, frozen, state: call.state }, transport);
-  } catch { transport.observe("unavailable", "admission"); }
+  const cut = await captureCut(engine, call, transport);
   if (!cut) return call.next(call.event);
   cut.startedAt = startedAt; cut.setupMs = performance.now() - startedAt;
   call.state.add(cut);
   const boundTransport: ShadowTransport = { post: transport.post, observe: (status, reason) => transport.observe(status, reason, cut!.sessionId) };
-  const abort = () => { cut!.cancelled = true; cut!.cancel.resolve(); cut!.ready.reject(new Error("dispatch aborted")); };
+  const abort = () => cancelCut(cut);
   call.signal?.addEventListener("abort", abort, { once: true });
   if (call.signal?.aborted) abort();
   try {
@@ -79,12 +80,26 @@ export async function runCompactionShadow(engine: ShadowEngine, call: Invocation
     boundTransport.observe("unavailable", "executor");
     deliverUnstarted({ cut, state: call.state, outcome: "unavailable" }, boundTransport);
   }
+  try { return await nativeAtCut(call, cut, boundTransport); }
+  finally { call.signal?.removeEventListener("abort", abort); }
+}
+async function captureCut(engine: ShadowEngine, call: Invocation, transport: ShadowTransport): Promise<Cut | undefined> {
+  try {
+    const frozen = structuredClone(call.event), boundaries = call.state.freezeBoundaries();
+    const [identity, worker] = await Promise.all([
+      Promise.all([engine.session.id(), engine.session.cwd(), captureHeaderModel(engine)]),
+      engine.env.get("LCM_SUMMARIZE_WORKER").catch(() => undefined),
+    ]);
+    if (worker === "1") return undefined;
+    return await admit({ identity, frozen, boundaries, state: call.state }, transport);
+  } catch { transport.observe("unavailable", "admission"); return undefined; }
+}
+async function nativeAtCut(call: Invocation, cut: Cut, transport: ShadowTransport): Promise<SessionCompactResult> {
   let result: SessionCompactResult;
   const nativeAt = performance.now();
   try { result = await call.next(call.event); }
-  catch (error) { cut.nativeMs = performance.now() - nativeAt; await pairNative(cut, null, boundTransport); throw error; }
-  finally { call.signal?.removeEventListener("abort", abort); }
-  cut.nativeMs = performance.now() - nativeAt; await pairNative(cut, result, boundTransport);
+  catch (error) { cut.nativeMs = performance.now() - nativeAt; await pairNative(cut, null, transport); throw error; }
+  cut.nativeMs = performance.now() - nativeAt; await pairNative(cut, result, transport);
   return result;
 }
 function deliverUnstarted({ cut, state, outcome }: { cut: Cut; state: ShadowSessionState; outcome: "unavailable" | "aborted" }, transport: ShadowTransport): void {
@@ -98,27 +113,30 @@ function startArms(engine: ShadowEngine, { cut, state, cap }: { cut: Cut; state:
   const forkDelivery = deliverFork(fork, cut, transport);
   state.own(forkDelivery, transport);
   const input = cut.fork ? cut.ready.promise : cut.ready.promise.then(() => { throw new Error("admitted input unavailable"); });
+  let pairStarted = false;
   const activeEngine: ShadowEngine = { ...engine, model: { ...engine.model, complete: (request, options) => {
     if (cut.cancelled) return Promise.reject(new Error("session ended"));
-    return engine.model.complete(request, options);
+    pairStarted = true; return engine.model.complete(request, options);
   } } };
-  const pair = executeHeaderPair(activeEngine, input, { model: cut.model, budget }).catch(() => ({ B: unavailableArm(cut, "B"), C: unavailableArm(cut, "C") }));
-  const pairDelivery = Promise.race([pair, cut.cancel.promise.then(() => ({ B: cancelledArm(cut, "B"), C: cancelledArm(cut, "C") }))]).then(async outcomes => {
+  const pair = executeHeaderPair(activeEngine, input, { model: cut.model, budget, canStart: () => !cut.cancelled }).catch(() => ({ B: unavailableArm(cut, "B"), C: unavailableArm(cut, "C") }));
+  const pairDelivery = Promise.race([pair, cut.cancel.promise.then(() => pairStarted ? pair : ({ B: cancelledArm(cut, "B"), C: cancelledArm(cut, "C") }))]).then(async outcomes => {
     await cut.paired.promise;
     await Promise.all([postArm(cut, outcomes.B, transport), postArm(cut, outcomes.C, transport)]);
   });
   state.own(pairDelivery, transport);
   state.own(Promise.all([forkDelivery, pairDelivery]).then(() => state.remove(cut), () => state.remove(cut)), transport);
 }
-type AdmissionInput = { identity: [string, string, SessionModelAtCut]; frozen: SessionCompactInput; state: ShadowSessionState };
-async function admit({ identity: [sessionId, cwd, model], frozen, state }: AdmissionInput, transport: ShadowTransport): Promise<Cut | undefined> {
+type AdmissionInput = { identity: [string, string, SessionModelAtCut]; frozen: SessionCompactInput; boundaries: ReadonlyMap<string, BoundaryEpoch>; state: ShadowSessionState };
+async function admit({ identity: [sessionId, cwd, model], frozen, boundaries, state }: AdmissionInput, transport: ShadowTransport): Promise<Cut | undefined> {
   const { messages, instructions, trigger } = frozen;
-  const boundary = state.boundary(sessionId);
+  const boundary = boundaries.get(sessionId);
   if (!boundary) { transport.observe("unavailable", "boundary", sessionId); return undefined; }
   const cutId = crypto.randomUUID();
   const response = await transport.post("/compaction-shadow/start", { cwd, session_id: sessionId, cut_id: cutId, model: model.id, trigger, instructions,
-    boundary_uuid: boundary, engine_messages: descriptors(messages), prepare_header: true });
-  return admittedCut(response.body, { sessionId, cwd, model, cutId, messages }, transport);
+    boundary_uuid: boundary.uuid, engine_messages: descriptors(messages), prepare_header: true });
+  const cut = admittedCut(response.body, { sessionId, cwd, model, cutId, messages }, transport);
+  if (cut && state.epoch(sessionId) !== boundary.epoch) cancelCut(cut);
+  return cut;
 }
 type AdmissionIdentity = Pick<Cut, "sessionId" | "cwd" | "model" | "cutId" | "messages">;
 function admittedCut(body: unknown, identity: AdmissionIdentity, transport: ShadowTransport): Cut | undefined {
@@ -144,7 +162,7 @@ function unavailableArm(cut: Cut, arm: "A" | "B" | "C"): HeaderOutcome {
 
 function binding(cut: Cut) { return { cwd: cut.cwd, session_id: cut.sessionId, cut_id: cut.cutId, snapshot_hash: cut.snapshotHash }; }
 async function deliverFork(fork: Promise<HeaderOutcome>, cut: Cut, transport: ShadowTransport): Promise<void> {
-  const result = await Promise.race([fork, cut.cancel.promise.then(() => cancelledArm(cut, "A"))]);
+  const result = await fork;
   await cut.paired.promise; await postArm(cut, result, transport);
 }
 function cancelledArm(cut: Cut, arm: "A" | "B" | "C"): HeaderOutcome {
@@ -154,7 +172,7 @@ function cancelledArm(cut: Cut, arm: "A" | "B" | "C"): HeaderOutcome {
 }
 async function postArm(cut: Cut, result: HeaderOutcome, transport: ShadowTransport): Promise<void> {
   const timings = { setupMs: cut.setupMs, nativeMs: cut.nativeMs, pairingMs: cut.pairingMs, hookMs: cut.hookMs };
-  const response = await transport.post("/compaction-shadow/arm", { ...binding(cut), arm: result.arm, attempt_id: "first", record: { ...result, timings, costUsd: null, usageAttempts: result.usage ? [{ model: result.requestedModel, failed: result.outcome !== "answered", usage: result.usage }] : [] } });
+  const response = await transport.post("/compaction-shadow/arm", { ...binding(cut), arm: result.arm, attempt_id: "first", record: { ...result, timings, costUsd: null, usageAttempts: [] } });
   if (!response.body?.stored) transport.observe("unconfirmed", "arm-delivery");
 }
 function extractedNative(cut: Cut, result: SessionCompactResult | null) {
