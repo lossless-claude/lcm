@@ -134,8 +134,18 @@ The prefix, wrapper and chain shape upgrade also queues every stored call once o
 stores that already have incremental tables. The queue and its completion marker
 commit together; refresh replaces old-format keys through the same contribution
 journal and publication path. Reopening the store does not queue them again.
-Refresh processes pages of at most 128 changed calls or lessons and yields to the
-event loop between pages. The project mutation lease serializes refreshes;
+Refresh processes pages of at most 128 changed calls or lessons. Each page collects
+changed calls and their 20-call predecessors, evaluates each distinct affected
+pair once, and caches shapes (including absent shapes) for that page's calls and
+windows only. Pages follow session and call position; the last processed position
+avoids repeating predecessor pairs across pages. Journal entries remain until
+their contributions and all affected pairs are durable.
+`REFRESH_TIME_BUDGET_MS` is a 10 ms event-loop budget shared by call updates, pair
+updates, session invalidation and publication. Refresh checks it after synchronous
+units and yields before starting another once it is spent, as well as between
+pages. A single unit can overrun the budget. Each write unit finishes its savepoint
+before yielding; no transaction stays open across a yield.
+The project mutation lease serializes refreshes;
 ordinary refresh work depends on changed evidence and its pairing windows,
 while deletion depends on the affected session. Readers see the previous complete
 snapshot until a single generation switch publishes updated lesson versions.

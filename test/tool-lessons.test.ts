@@ -6,6 +6,7 @@ import { ensureToolLessonIncrementalSchema } from "../src/db/tool-lesson-schema.
 import { readInsights } from "../src/daemon/restore/insights.js";
 import type { DaemonConfig } from "../src/daemon/config.js";
 import { commandShape, maskBlockReason, ToolLessonStore } from "../src/promotion/tool-lessons.js";
+import { ToolLessonProjection } from "../src/promotion/tool-lesson-projection.js";
 
 it.each([
   ["cd /tmp/private-work && npm install widget", "npm install <args>"],
@@ -333,6 +334,67 @@ it("keeps distinct blocked command/reason pairs in the window without changing p
   for (const lesson of published) expect(lesson).not.toHaveProperty("command");
 });
 
+it("evaluates each call's pair once when a whole session is journaled across pages", async () => {
+  const rows = Array.from({ length: 300 }, (_, index) =>
+    storedCall("session", `npm install package-${index}`, index % 8 === 7 ? "succeeded" : "failed"));
+  const replace = ToolLessonProjection.prototype.replaceContribution;
+  const evaluated: number[] = [];
+  const spy = vi.spyOn(ToolLessonProjection.prototype, "replaceContribution").mockImplementation(function (...args) {
+    if (args[1] === "error-fix") evaluated.push(args[0]);
+    return replace.apply(this, args);
+  });
+  try {
+    await lessons.refresh("project");
+    expect(evaluated.sort((a, b) => a - b)).toEqual(rows);
+  } finally { spy.mockRestore(); }
+});
+
+it("parses each call's shape once within a page, including commands without a shape", async () => {
+  const commands = Array.from({ length: 60 }, (_, index) => JSON.stringify(index % 3 === 0
+    ? ["bash", "-c", `npm install package-${index}`] : ["npm", "install", `package-${index}`]));
+  commands.forEach((command, index) => storedCall("session", command, index % 3 === 2 ? "succeeded" : "failed"));
+  const parse = JSON.parse;
+  const counts = new Map<string, number>();
+  const spy = vi.spyOn(JSON, "parse").mockImplementation((value, reviver) => {
+    if (commands.includes(value)) counts.set(value, (counts.get(value) ?? 0) + 1);
+    return parse(value, reviver);
+  });
+  try {
+    await lessons.refresh("project");
+    expect([...counts.values()]).toEqual(commands.map(() => 1));
+  } finally { spy.mockRestore(); }
+});
+
+it("yields after a slow call update before updating the next call, outside its transaction", async () => {
+  for (let index = 0; index < 3; index++) storedCall("session", `npm install package-${index}`, "succeeded");
+  let elapsed = 0, transactions = 0, steps = 0;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => elapsed);
+  const exec = db.exec.bind(db);
+  const transaction = vi.spyOn(db, "exec").mockImplementation(sql => {
+    exec(sql);
+    if (sql.startsWith("SAVEPOINT")) transactions++;
+    if (sql.includes("RELEASE")) transactions--;
+  });
+  const record = ToolLessonProjection.prototype.recordSuccess;
+  const update = vi.spyOn(ToolLessonProjection.prototype, "recordSuccess").mockImplementation(function (...args) {
+    record.apply(this, args);
+    steps++;
+    if (steps === 1) elapsed = 100;
+  });
+  const observed: number[] = [];
+  const timer = new Promise<void>(resolve => setImmediate(() => {
+    observed.push(steps, transactions);
+    resolve();
+  }));
+  try {
+    await lessons.refresh("project");
+    await timer;
+    expect(observed).toEqual([1, 0]);
+  } finally {
+    update.mockRestore(); transaction.mockRestore(); clock.mockRestore();
+  }
+});
+
 it("bounds refresh work by changed calls and their pair windows", async () => {
   for (let index = 0; index < 400; index++) {
     storedCall("large-session", "git status", "blocked", { reason: "Blocked: permission" });
@@ -365,6 +427,30 @@ it("bounds refresh work by changed calls and their pair windows", async () => {
     await new ToolLessonStore(db).refresh("project");
     expect(callsRead).toBe(0);
   } finally { spy.mockRestore(); }
+});
+
+it("keeps a page journaled when pair publication is interrupted after call contributions", async () => {
+  await lessons.refresh("project");
+  for (let index = 0; index < 2; index++) {
+    storedCall("session", `npm install old-${index}`, "failed");
+    storedCall("session", `npm install new-${index}`, "succeeded");
+  }
+  const replace = ToolLessonProjection.prototype.replaceContribution;
+  let pairs = 0;
+  const spy = vi.spyOn(ToolLessonProjection.prototype, "replaceContribution").mockImplementation(function (...args) {
+    if (args[1] === "error-fix" && ++pairs === 3) throw new Error("pair update interrupted");
+    return replace.apply(this, args);
+  });
+  try {
+    await expect(lessons.refresh("project")).rejects.toThrow("pair update interrupted");
+    expect(db.prepare("SELECT count(*) AS n FROM tool_lesson_changes").get()!.n).toBe(4);
+    expect(lessons.list()).toEqual([]);
+  } finally { spy.mockRestore(); }
+  const fresh = rebuiltSnapshot();
+  try {
+    expect(await new ToolLessonStore(db).refresh("project")).toBe(await fresh.store.refresh("project"));
+    expect(lessons.list({ includeRetired: true })).toEqual(fresh.store.list({ includeRetired: true }));
+  } finally { fresh.db.close(); }
 });
 
 it("re-derives only the removed call's session, including a newly shortened pair window", async () => {
