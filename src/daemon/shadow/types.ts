@@ -1,17 +1,21 @@
 import { createHash } from "node:crypto";
-import type { ContextCoverage } from "../../store/summary-store.js";
+import type { ContextCoverage, ContextWindowItem } from "../../store/summary-store.js";
+import { validCompactionHeader, type CompactionHeader } from "../../../hooks/compaction-header-schema.js";
+import type { HeaderCitations } from "../../../hooks/header-citations.js";
+export { validModelName } from "../../../hooks/compaction-header-schema.js";
 
 export const HTTP = { ok: 200, badRequest: 400, notFound: 404, conflict: 409, gone: 410, unprocessable: 422, minimum: 100, maximum: 599 } as const;
 export const SHADOW_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const HEADER_SECTIONS = ["directives", "intent", "decisions", "taskAndNextStep", "openThreads", "files", "errors"] as const;
 export type HeaderItem = { text: string; sources: (string | { quote: string })[]; status?: string; supersedes?: string[]; fix?: string };
 export type ShadowHeader = { version: 1 } & Record<typeof HEADER_SECTIONS[number], HeaderItem[]>;
+export type StoredShadowHeader = ShadowHeader | CompactionHeader;
 export type ShadowUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
 export type ShadowMessage = { role: "user" | "assistant"; text: string; handle?: string };
-export type ShadowOriginal = { id: number; seq: number; role: string; text: string; uuid?: string; origin: "user" | "other" | "unknown" };
+export type ShadowOriginal = { id: number; seq: number; role: string; text: string; uuid?: string; origin: "user" | "other" | "unknown"; isMeta?: boolean };
 export type ShadowSnapshot = {
   version: 1; originals: ShadowOriginal[]; engineMessages: ShadowMessage[];
-  window: { text: string; coverage: ContextCoverage };
+  window: { text: string; coverage: ContextCoverage; items?: ContextWindowItem[] };
   sourceHash: string;
 };
 export type ShadowManifest = {
@@ -27,19 +31,18 @@ export type NativeRecord = {
   tokensBefore?: number; tokensAfter?: number; hookAddedMs?: number; costUsd: number | null;
 };
 export type ArmRecord = {
-  arm: "A" | "B" | "C"; attemptId: string; text: string; header: ShadowHeader | null;
+  arm: "A" | "B" | "C"; attemptId: string; text: string; header: StoredShadowHeader | null;
   outcome: string; requestedModel: string; usage: ShadowUsage | null; durationMs: number | null;
-  inputHash: string; promptHash: string; costUsd: number | null;
+  inputHash: string | null; promptHash: string | null; costUsd: number | null;
   usageAttempts: { usage: ShadowUsage; failed: boolean; model: string }[];
   status?: number | null; errorKind?: string;
   options?: { maxTokens?: number; effort?: string };
+  citations?: HeaderCitations;
 };
 export const digest = (text: string): string => createHash("sha256").update(text).digest("hex");
 export const objectHash = (value: unknown): string => digest(JSON.stringify(value));
 export const object = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 export const safeId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,140}$/.test(value);
-export const validModelName = (value: unknown): value is string =>
-  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$/.exec(value)?.[0] === value;
 export const hash = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 export const nonnegative = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 export function validUsage(value: unknown): value is ShadowUsage {
@@ -51,4 +54,7 @@ export function validHeader(value: unknown): value is ShadowHeader {
   return HEADER_SECTIONS.every(key => Array.isArray(value[key]) && value[key].every((item: unknown) =>
     object(item) && typeof item.text === "string" && item.text.trim().length > 0 && Array.isArray(item.sources) && item.sources.length > 0 &&
     item.sources.every((source: unknown) => typeof source === "string" || object(source) && typeof source.quote === "string")));
+}
+export function validStoredHeader(value: unknown): value is StoredShadowHeader {
+  return validHeader(value) || validCompactionHeader(value);
 }

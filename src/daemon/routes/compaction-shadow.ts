@@ -10,6 +10,8 @@ import { sendJson, type RouteHandler } from "../server.js";
 import { shadowMessages, nativeRecord, armRecord, correlationId } from "../shadow/records.js";
 import { captureShadowSnapshot } from "../shadow/snapshot.js";
 import { verifyNativeTail } from "../shadow/tail.js";
+import { headerCitationEvidence } from "../shadow/header-job.js";
+import { resolveHeaderCitations } from "../../../hooks/header-citations.js";
 import { CompactionShadowStore, ShadowStoreError, recoverShadowProject, recoverShadowProjects } from "../shadow/store.js";
 import { SHADOW_RETENTION_MS, HTTP, hash, object, objectHash, safeId, validModelName, type ShadowManifest } from "../shadow/types.js";
 
@@ -106,7 +108,12 @@ function storeResult({ store, cwd, scrubber }: Pick<Admission, "store" | "cwd" |
     verifyNativeTail(record.tail, snapshot.engineMessages, text => scrubber.scrub(text));
     store.writeNative(cut, record);
   }
-  else store.writeArm(cut, armRecord(input, input.record, scrubber));
+  else {
+    const record = armRecord(input, input.record, scrubber);
+    if (record.header?.version === 2) record.citations = resolveHeaderCitations(record.header, headerCitationEvidence(cut.cutId,
+      snapshot.originals.map(row => ({ ...row, text: scrubber.scrub(row.text) })), snapshot.window.items ?? []));
+    store.writeArm(cut, record);
+  }
 }
 function requestIdentityHash(input: Record<string, unknown>, cutId: string): string {
   return objectHash([input.cwd, cutId, input.session_id, input.boundary_uuid, input.model, input.trigger, input.instructions, engineMessagesHash(input.engine_messages)]);

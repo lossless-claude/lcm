@@ -23,11 +23,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
-function collectFiles(dir, root, out, predicate) {
+function collectFiles(dir, { root, out, predicate }) {
   if (!existsSync(dir)) return out;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) collectFiles(full, root, out, predicate);
+    if (entry.isDirectory()) collectFiles(full, { root, out, predicate });
     else if (entry.isFile() && predicate(entry.name)) out.push(relative(root, full));
   }
   return out;
@@ -48,17 +48,19 @@ function hashPaths(root, paths) {
 // installer script `postbuild` copies into `dist/`.
 const SOURCE_DIRS = ["src", "bin", "installer"];
 const SOURCE_FILES = ["tsconfig.json"];
+// Node consumers and the sandbox share this schema; it is also a tsc input.
+const SHARED_HOOK_FILES = ["hooks/compaction-header-schema.ts", "hooks/header-citations.ts"];
 
 /** Fingerprint of the emitted JavaScript: what this build *is*. */
 export function computeBuildId(distDir) {
-  return hashPaths(distDir, collectFiles(distDir, distDir, [], (name) => name.endsWith(".js")).sort());
+  return hashPaths(distDir, collectFiles(distDir, { root: distDir, out: [], predicate: (name) => name.endsWith(".js") }).sort());
 }
 
 /** Fingerprint of the inputs: what this build was made *from*. */
 export function sourceFingerprint(root) {
-  const files = [...SOURCE_FILES];
+  const files = [...SOURCE_FILES, ...SHARED_HOOK_FILES.filter(path => existsSync(join(root, path)))];
   for (const dir of SOURCE_DIRS) {
-    collectFiles(join(root, dir), root, files, (name) => !name.startsWith("."));
+    collectFiles(join(root, dir), { root, out: files, predicate: (name) => !name.startsWith(".") });
   }
   return hashPaths(root, files.sort());
 }

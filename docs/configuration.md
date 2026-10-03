@@ -102,6 +102,21 @@ preserved exactly; sensitive identifiers are rejected. Admission retries compare
 a digest of raw identity fields, so redaction cannot hide a changed request.
 Native tails must match frozen engine handles in order, with the same role and
 current-rule scrubbed text; conflicting deliveries return HTTP 409.
+The header library prepares version-2 state and deterministic verbatim excerpts,
+without registering a compaction hook. Ordinary summaries and header arms share
+the existing `sessionSummarizerMaxOutputTokens` owner by session id, preserving
+spending across poller restarts. Complete requests reserve allowances; uncapped
+fork overshoot and unknown usage remain explicit. Document/header sizes are
+targets and instruction overflow is measured. See
+[compaction header jobs](design/compaction-header.md).
+Every human message remains in excerpts; oversized messages have a raw-row
+middle-elision marker. Arm records include production-time citation resolution.
+Unknown model usage consumes the full shared reservation rather than restoring
+allowance, while retaining the `usageUnknown` flag.
+Finite registration caps are floored and clamped to safe integers; invalid values
+use the existing default. Invalid host usage consumes the full reservation and
+releases the lease. Shell-interaction and interruption rows are excluded from
+user excerpts, and header source blocks use context-window fencing.
 
 `bench-corpora.json` is optional for shadow admission: a valid existing exclusion
 skips a project's cuts before Capture with HTTP 200 and

@@ -5,6 +5,12 @@ It does not install a document, change restore, regenerate the DAG or enable mod
 calls. A live hook and its executor are separate work; their lifetime and fork/native
 concurrency require verification in the engine.
 
+See [compaction header jobs](compaction-header.md) for the document, version-2
+schema and executor rules. The library installs no compaction hook.
+Version-2 arms persist per-item citation resolution without changing shadow
+`answered` outcomes; the live acceptance predicate refuses missing or ambiguous
+references. Human messages are never removed from excerpts by a classifier.
+
 ## Admission and storage
 
 The authenticated daemon routes are `POST /compaction-shadow/start`, `/native` and
@@ -18,7 +24,8 @@ project mutation lease, preserving all raw roles. It rejects unavailable coverag
 post-cut content, source changes and windows beyond the existing 65536-byte bound.
 It does not run a summary sweep. Native PreCompact continues using its configured
 pipeline. The source index uses unique role/text matches for UUID/origin evidence;
-ambiguous repeated text remains unknown instead of being assigned by counting.
+ambiguous UUIDs remain unknown instead of being assigned by counting. Origin may
+be retained when all matching source rows agree.
 
 Each cut lives under `projects/<project-id>/compaction-shadow/<cut-id>/` in the lcm
 home, independently of episodic storage. `manifest.json` records cut identity,

@@ -26,29 +26,8 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
       sleep: vi.fn(() => new Promise<void>(() => {})),
     },
     ui: { log: vi.fn() },
-    http: {
-      fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
-        if (init?.method === "POST") {
-          const body = JSON.parse(init.body!);
-          if (url.endsWith("/worker-session") && body.action === "check") return { ok: true, status: 200,
-            text: JSON.stringify({ enrolled: true, warning: WORKER_WARNING }) };
-          // session.start also fires /session-scavenge; these tests are about job answers.
-          if (url.includes("/summarize-jobs/")) posts.push({ url, body });
-          if (body.error === "spend cap") finish();
-          return { ok: true, status: 200, text: "{}" };
-        }
-        if (url.endsWith("/health")) return { ok: true, status: 200, text: "{}" };
-        if (jobs.length) {
-          const job = jobs.shift();
-          if (job instanceof Error) throw job;
-          if (job === "unauthorized") return { ok: false, status: 401, text: "" };
-          if (job === "malformed") return { ok: true, status: 200, text: "not json" };
-          return { ok: true, status: 200, text: JSON.stringify({ job }) };
-        }
-        finish();
-        return { ok: false, status: 404, text: "" };
-      }),
-    },
+    http: { fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) =>
+      init?.method === "POST" ? summaryPost(url, JSON.parse(init.body!), { posts, finish }) : summaryGet(url, { jobs, finish })) },
   };
   const { register } = await import("../../hooks/lcm-hooks.js");
   register(((event: string, ...args: any[]) => handlers.set(event, args.at(-1))) as any, options);
@@ -56,8 +35,104 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
   return { engine, posts, done, trigger, retries, jobs, handlers };
 }
 
+function summaryPost(url: string, body: Record<string, any>, { posts, finish }: { posts: { url: string; body: Record<string, any> }[]; finish: () => void }) {
+  if (url.endsWith("/worker-session") && body.action === "check") return { ok: true, status: 200, text: JSON.stringify({ enrolled: true, warning: WORKER_WARNING }) };
+  if (url.includes("/summarize-jobs/")) posts.push({ url, body });
+  if (body.error === "spend cap") finish();
+  return { ok: true, status: 200, text: "{}" };
+}
+function summaryGet(url: string, { jobs, finish }: { jobs: unknown[]; finish: () => void }) {
+  if (url.endsWith("/health")) return { ok: true, status: 200, text: "{}" };
+  if (!jobs.length) { finish(); return { ok: false, status: 404, text: "" }; }
+  const job = jobs.shift();
+  if (job instanceof Error) throw job;
+  if (job === "unauthorized") return { ok: false, status: 401, text: "" };
+  if (job === "malformed") return { ok: true, status: 200, text: "not json" };
+  return { ok: true, status: 200, text: JSON.stringify({ job }) };
+}
+
 describe("function-hook session summarizer", () => {
   beforeEach(() => vi.resetModules());
+
+  it.each([{ configured: 2500.5, normalized: 2500 }, { configured: 1e18, normalized: Number.MAX_SAFE_INTEGER }])("normalizes finite cap $configured without stopping the summarizer", async ({ configured, normalized }) => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: configured }, [{ ...leaf, maxTokens: 4000 }]);
+    await harness.trigger();
+    await vi.waitFor(() => expect(harness.engine.model.complete).toHaveBeenCalled());
+    await harness.done;
+    expect(harness.engine.model.complete).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: Math.min(4000, normalized) }));
+    expect(harness.engine.ui.log.mock.calls.flat().join("\n")).not.toContain("session summarizer stopped");
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    expect(sharedSessionOutputBudget(sessionId, normalized).cap).toBe(normalized);
+  });
+  it.each([NaN, Infinity, -Infinity])("retains main's default for invalid cap %s", async configured => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: configured });
+    await harness.trigger(); await harness.done;
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    expect(sharedSessionOutputBudget(sessionId, 50000).cap).toBe(50000);
+    expect(harness.engine.model.complete).toHaveBeenCalled();
+  });
+
+  it("charges an unreported failed completion at its full reservation alongside a concurrent header lease", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 12 }, [{ ...leaf, maxTokens: 4 }]);
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const budget = sharedSessionOutputBudget(sessionId, 12);
+    let headerLease: Awaited<ReturnType<typeof budget.reserveComplete>>;
+    harness.engine.model.complete.mockImplementation(async () => {
+      headerLease = await budget.reserveComplete(3); throw new Error("connection dropped");
+    });
+    await harness.trigger(); await harness.done;
+    expect(budget.snapshot()).toMatchObject({ spent: 4, reserved: 3, available: 5, usageUnknown: true });
+    headerLease!.settle(1);
+    expect((await budget.reserveComplete(100))!.maxTokens).toBe(7);
+  });
+  it("does not mistake known prior fork usage for the usage of a failed fallback", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 12 }, [{ ...leaf, kind: "condensed", maxTokens: 4 }]);
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const budget = sharedSessionOutputBudget(sessionId, 12);
+    harness.engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "api-error", usage: { input_tokens: 1, output_tokens: 1 } });
+    harness.engine.model.complete.mockRejectedValue(new Error("connection dropped"));
+    await harness.trigger(); await harness.done;
+    expect(budget.snapshot()).toMatchObject({ spent: 12, available: 0, usageUnknown: true });
+  });
+
+  it("uses a stable module owner even when the header and poller receive different dispatch facades", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 5 });
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const budget = sharedSessionOutputBudget(sessionId, 5);
+    (await budget.reserveComplete(4))!.settle(4);
+    harness.engine.model.complete.mockResolvedValue({ isAnswered: true, text: "ok", usage: { input_tokens: 1, output_tokens: 1 } });
+    await harness.trigger(); await harness.done;
+    expect(harness.engine.model.complete).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 1 }));
+    expect(budget.snapshot().spent).toBe(5);
+  });
+
+  it("shares the session output budget with header work instead of resetting it at poller start", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 5 });
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const budget = sharedSessionOutputBudget(sessionId, 5);
+    (await budget.reserveComplete(4))!.settle(4);
+    harness.engine.model.complete.mockResolvedValue({ isAnswered: true, text: "ok", usage: { input_tokens: 1, output_tokens: 1 } });
+    await harness.trigger(); await harness.done;
+    expect(harness.engine.model.complete).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: 1 }));
+    expect(budget.snapshot().spent).toBe(5);
+  });
+  it("charges unsuccessful ordinary output to the shared owner", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 5 });
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const budget = sharedSessionOutputBudget(sessionId, 5);
+    harness.engine.model.complete.mockResolvedValue({ isAnswered: false, reason: "api-error", usage: { input_tokens: 1, output_tokens: 3 } });
+    await harness.trigger(); await harness.done;
+    expect(budget.snapshot().spent).toBe(3);
+  });
+  it("records ordinary fork overshoot even when the answer is refused", async () => {
+    const harness = await start({ sessionSummarizerMaxOutputTokens: 5 }, [{ ...leaf, kind: "condensed" }]);
+    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const budget = sharedSessionOutputBudget(sessionId, 5);
+    harness.engine.model.fork.mockResolvedValue({ isAnswered: false, reason: "api-error", usage: { input_tokens: 2, output_tokens: 8 } });
+    await harness.trigger(); await harness.done;
+    expect(budget.snapshot()).toMatchObject({ spent: 8, overshoot: 3 });
+    expect(harness.engine.model.complete).not.toHaveBeenCalled();
+  });
 
   it("warns about exclusion only after confirmed command-hook enrollment", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 0 }, [], { LCM_SUMMARIZE_WORKER: "1" });

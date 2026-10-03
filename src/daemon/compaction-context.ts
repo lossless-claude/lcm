@@ -5,7 +5,9 @@ import { renderContextItems } from "./restore/context-items.js";
 
 export type ContextWindowStatus = "ready" | "empty" | "busy" | "deadline" | "over-budget" | "coverage-unverified" | "capture-unverified" | "excluded" | "no-summarizer" | "summary-failed" | "boundary-scan-limit" | "invalid-request";
 
-export async function readCompactionContext(store: SummaryStore, conversationId: number, byteBudget: number) {
+export async function readCompactionContext(store: SummaryStore, conversationId: number, request: number | { byteBudget: number; includeItems: true }) {
+  const byteBudget = typeof request === "number" ? request : request.byteBudget;
+  const includeItems = typeof request !== "number";
   const rows = await store.readContextWindow(conversationId, 0, { complete: true });
   const coverage = await store.readContextCoverage(conversationId, rows);
   const base = { conversationId, byteBudget, ...coverage };
@@ -15,5 +17,5 @@ export async function readCompactionContext(store: SummaryStore, conversationId:
   const text = wrapCompactionContext(fenceContent(renderContextItems(rows).join("\n\n"), "recent-session-context"));
   const bytes = Buffer.byteLength(text, "utf8");
   if (bytes > byteBudget) return { ...base, status: "over-budget" as const };
-  return { ...base, status: "ready" as const, text, bytes };
+  return { ...base, status: "ready" as const, text, bytes, ...(includeItems ? { items: rows } : {}) };
 }

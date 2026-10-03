@@ -10,6 +10,7 @@ import { projectDir, projectDbPath } from "../../src/daemon/project.js";
 import { ensureAuthToken, readAuthToken } from "../../src/daemon/auth.js";
 import { DatabaseSync } from "node:sqlite";
 import { SummaryStore } from "../../src/store/summary-store.js";
+import { workingHeader } from "../compaction-header/fixtures.js";
 
 let root: string, cwd: string, paths: LcmPaths, daemon: DaemonInstance, token: string, transcript: string, databaseFile: string;
 const fileForProject = projectDbPath;
@@ -67,6 +68,40 @@ describe("daemon compaction shadow artifacts", () => {
     expect(cut.snapshot.window.text).toContain("tool evidence");
     expect(cut.cut.model).toBe("session-model-id");
     expect(artifact("manifest.json").state).toBe("pending");
+  });
+  it("freezes structured window items with current scrubbing for header preparation", async () => {
+    const cut = await start();
+    expect(cut.snapshot.window.items.map((row: any) => row.role)).toEqual(["user", "tool"]);
+    expect(cut.snapshot.window.items[0]).toMatchObject({ itemType: "message", messageId: cut.snapshot.originals[0].id, content: "Keep tests. [REDACTED]" });
+    expect(artifact("snapshot.json").window.items).toEqual(cut.snapshot.window.items);
+  });
+  it("preserves proven human origin for repeated text without guessing row UUIDs", async () => {
+    writeFileSync(transcript, ["one", "two"].map(uuid => JSON.stringify({ uuid, type: "user", message: { role: "user", content: "Never publish." } })).join("\n") + "\n");
+    const cut = await start();
+    expect(cut.snapshot.originals.map((row: any) => row.origin)).toEqual(["user", "user"]);
+    expect(cut.snapshot.originals.every((row: any) => row.uuid === undefined)).toBe(true);
+  });
+  it("stores a version-2 header with excerpt pointers, scrubbing free text while retaining typed state", async () => {
+    const cut = await start(), header = workingHeader();
+    header.intent[0].text = "PRIVATE_WORD";
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, header } })).status).toBe(200);
+    expect(artifact("arm-A-first.json").header).toMatchObject({ version: 2, intent: [{ text: "[REDACTED]" }],
+      instructionsInForce: [{ sources: ["[excerpt:u1]"] }], taskState: [{ status: "in progress", provenance: "authorized by the user" }] });
+  });
+  it("persists authoritative per-item citation resolution without downgrading shadow answers", async () => {
+    const cut = await start(), header = workingHeader(); header.intent[0].sources = ["[excerpt:missing]"];
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, outcome: "answered", header,
+      citations: { version: 1, items: [] } } })).status).toBe(200);
+    const stored = artifact("arm-A-first.json");
+    expect(stored.outcome).toBe("answered");
+    expect(stored.citations.items.find((item: any) => item.section === "intent").status).toBe("missing");
+    expect(stored.citations.items.find((item: any) => item.section === "instructionsInForce").status).toBe("resolved");
+  });
+  it("records unknown hashes only for an unavailable header input", async () => {
+    const cut = await start(), record = { ...arm(cut).record, outcome: "unavailable", inputHash: null, promptHash: null };
+    expect((await post("arm", { ...arm(cut), record })).status).toBe(200);
+    expect(artifact("arm-A-first.json")).toMatchObject({ outcome: "unavailable", inputHash: null, promptHash: null });
+    expect((await post("arm", { ...arm(cut), attempt_id: "second", record: { ...record, outcome: "answered" } })).status).toBe(400);
   });
   it("skips an excluded project before Capture or storage", async () => {
     writeFileSync(join(paths.home, "bench-corpora.json"), JSON.stringify({ exclude: [cwd] }));
@@ -126,12 +161,13 @@ describe("daemon compaction shadow artifacts", () => {
     const admitted = await post("start", { ...startInput(), engine_messages: messages });
     expect(admitted.status).toBe(200);
     const tail: { role: string; text: string; handle?: string }[] = messages.slice(1).map(row => ({ ...row }));
-    if (defect === "unknown") tail[0] = { ...tail[0], handle: "unknown_handle", text: "after-cut evidence" };
-    if (defect === "text") tail[0].text = "after-cut evidence";
-    if (defect === "order") tail.reverse();
-    if (defect === "duplicate") tail[1] = { ...tail[0] };
-    if (defect === "missing") delete tail[0].handle;
-    if (defect === "role") tail[0].role = "user";
+    const mutations: Record<string, () => void> = {
+      unknown: () => { tail[0] = { ...tail[0], handle: "unknown_handle", text: "after-cut evidence" }; },
+      text: () => { tail[0].text = "after-cut evidence"; }, order: () => { tail.reverse(); },
+      duplicate: () => { tail[1] = { ...tail[0] }; }, missing: () => { delete tail[0].handle; },
+      role: () => { tail[0].role = "user"; },
+    };
+    mutations[defect]?.();
     const request = native(admitted.body);
     expect((await post("native", { ...request, record: { ...request.record, tail } })).status).toBe(409);
     expect(existsSync(join(dir(), "native.json"))).toBe(false);
