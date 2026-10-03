@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
@@ -67,7 +68,7 @@ function temporaryOrTestCwd(cwd: string): boolean {
     || path.split(sep).some(part => /^(?:e2e-test-|lossless-(?:ingest|compact|status)-)/.test(part));
 }
 
-function staleProjectStores(paths: LcmPaths): {
+function staleProjectStores(paths: LcmPaths, cwdErrors?: Map<string, NodeJS.ErrnoException | null>): {
   stale: ProjectStore[]; unchecked: string[]; recordless: RecordlessStore[]; missingMeta: number; missingCwds: number;
 } {
   const stale: ProjectStore[] = [];
@@ -94,7 +95,12 @@ function staleProjectStores(paths: LcmPaths): {
       const cwd = meta?.cwd;
       let cwdError: NodeJS.ErrnoException | undefined;
       if (typeof cwd === "string" && isAbsolute(cwd)) {
-        try { statSync(cwd); } catch (error) {
+        try {
+          if (cwdErrors) {
+            const error = cwdErrors.get(dir);
+            if (error !== null) throw error ?? new Error("cwd not checked");
+          } else statSync(cwd);
+        } catch (error) {
           cwdError = error as NodeJS.ErrnoException;
           if (cwdError.code === "ENOENT" || cwdError.code === "ENOTDIR") missingCwds++;
         }
@@ -108,6 +114,7 @@ function staleProjectStores(paths: LcmPaths): {
         }
         continue;
       }
+      if (cwdErrors && cwdError && cwdError.code !== "ENOENT" && cwdError.code !== "ENOTDIR") continue;
       if (!temporaryOrTestCwd(cwd)) continue;
       if (cwdError) {
         // Permission or I/O failures do not establish that a checkout vanished.
@@ -119,13 +126,65 @@ function staleProjectStores(paths: LcmPaths): {
   return { stale, unchecked, recordless, missingMeta, missingCwds };
 }
 
+// Long enough for a local stat on a heavily loaded machine; short enough to bound an unreachable mount.
+export const CWD_CHECK_DEADLINE_MS = 1000;
+export const CWD_CHECK_CONCURRENCY = 4;
+type CwdStat = (cwd: string) => Promise<unknown>;
+
+async function checkCwds(paths: LcmPaths, statCwd: CwdStat): Promise<{
+  cwdErrors: Map<string, NodeJS.ErrnoException | null>; uncheckedCwds: string[];
+}> {
+  const errors = new Map<string, NodeJS.ErrnoException | null>();
+  const projects: Array<{ dir: string; cwd: string }> = [];
+  let entries: Dirent[];
+  try { entries = readdirSync(paths.projectsDir, { withFileTypes: true }); } catch {
+    return { cwdErrors: errors, uncheckedCwds: [] };
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = join(paths.projectsDir, entry.name);
+    const cwd = readProjectMetaIn(dir)?.cwd;
+    if (typeof cwd === "string" && isAbsolute(cwd)) {
+      projects.push({ dir, cwd });
+      errors.set(dir, new Error("cwd not checked"));
+    }
+  }
+  let next = 0;
+  const worker = async () => {
+    while (next < projects.length) {
+      const { dir, cwd } = projects[next++];
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = Symbol("timeout");
+      try {
+        const result = await Promise.race([
+          Promise.resolve().then(() => statCwd(cwd)).then(() => null, error => error as NodeJS.ErrnoException),
+          new Promise<typeof timeout>(resolve => { timer = setTimeout(() => resolve(timeout), CWD_CHECK_DEADLINE_MS); }),
+        ]);
+        // A timed-out stat cannot be cancelled. Keep its slot occupied instead of
+        // launching an unbounded number of operations against an unreachable mount.
+        if (result === timeout) return;
+        errors.set(dir, result);
+      } finally { clearTimeout(timer); }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CWD_CHECK_CONCURRENCY, projects.length) }, worker));
+  const uncheckedCwds = projects.filter(({ dir }) => {
+    const error = errors.get(dir);
+    return error && error.code !== "ENOENT" && error.code !== "ENOTDIR";
+  }).map(({ cwd }) => cwd);
+  return { cwdErrors: errors, uncheckedCwds };
+}
+
 /** Read-only: a missing ordinary checkout may be an unmounted disk and is retained. */
-export function checkStaleProjectStores(paths: LcmPaths, verbose = false): CheckResult {
-  const { stale, unchecked, recordless, missingMeta, missingCwds } = staleProjectStores(paths);
+export async function checkStaleProjectStores(paths: LcmPaths, verbose = false, statCwd: CwdStat = stat): Promise<CheckResult> {
+  const { cwdErrors, uncheckedCwds } = await checkCwds(paths, statCwd);
+  const { stale, unchecked, recordless, missingMeta, missingCwds } = staleProjectStores(paths, cwdErrors);
   // The full list belongs to the cleanup preview; doctor shows enough to recognise the pattern.
   const lines = doctorList(stale, verbose, store => `     ${store.id}: ${store.cwd}`);
   lines.push(`     ${missingMeta} project directories without meta.json`);
   lines.push(`     ${missingCwds} project directories with missing cwd`);
+  lines.push(`     ${uncheckedCwds.length} project directories with unchecked cwd`);
+  lines.push(...doctorList(uncheckedCwds, verbose, cwd => `     ${cwd}: not checked (deadline exceeded or filesystem error)`));
   if (verbose) lines.push(...unchecked.map(dir => `     ${dir}: not checked (unreadable or invalid project record)`));
   if (unchecked.length) lines.push(`     ${unchecked.length} stores not checked (unreadable or invalid project record)`);
   if (recordless.length) {
@@ -136,7 +195,7 @@ export function checkStaleProjectStores(paths: LcmPaths, verbose = false): Check
   if (stale.length || unchecked.length) lines.push("     Preview cleanup: lcm doctor --cleanup-stale-projects --dry-run");
   return {
     name: "stale-project-stores", category: "Storage",
-    status: stale.length || unchecked.length ? "warn" : "pass",
+    status: stale.length || unchecked.length || uncheckedCwds.length ? "warn" : "pass",
     message: `${stale.length} stale project stores (missing temporary or test directories)` + (lines.length ? `\n${lines.join("\n")}` : ""),
   };
 }

@@ -25,11 +25,11 @@ function store(id: string, projectId?: string): string {
   return dir;
 }
 
-it("doctor counts record-less stores and those holding promoted memories without changing them", () => {
+it("doctor counts record-less stores and those holding promoted memories without changing them", async () => {
   const dir = store("a".repeat(64), "unknown-project");
   store("b".repeat(64));
   const before = readFileSync(join(dir, "db.sqlite"));
-  const result = checkStaleProjectStores(createLcmPaths(home));
+  const result = await checkStaleProjectStores(createLcmPaths(home));
   expect(result.status).toBe("warn");
   expect(result.message).toContain("2 record-less project stores; 1 hold promoted memories");
   expect(result.message).toContain("lcm doctor --cleanup-stale-projects --dry-run");
@@ -67,12 +67,12 @@ it("cleanup preview recovers structured cwd evidence from an older database with
   expect(existsSync(join(dir, "meta.json"))).toBe(false);
 });
 
-it("doctor leaves promoted-memory counts unknown for unreadable databases", () => {
+it("doctor leaves promoted-memory counts unknown for unreadable databases", async () => {
   const paths = createLcmPaths(home);
   const dir = join(paths.projectsDir, "f".repeat(64));
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "db.sqlite"), "not a database");
-  const message = checkStaleProjectStores(paths).message;
+  const message = (await checkStaleProjectStores(paths)).message;
   expect(message).toContain("1 record-less project stores; 0 hold promoted memories");
   expect(message).toContain("Promoted memories not checked in 1 unreadable databases");
 });

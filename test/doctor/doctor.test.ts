@@ -1,3 +1,4 @@
+import * as fsPromises from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { runDoctor } from "../../src/doctor/doctor.js";
 import { REQUIRED_HOOKS } from "../../installer/install.js";
@@ -12,8 +13,13 @@ import { join } from "node:path";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import { rememberSubagentGuard, subagentGuardFingerprint } from "../../src/daemon/subagent-guard-failures.js";
 import { claudeProjectSlug, projectDir } from "../../src/daemon/project.js";
-import { cleanupStaleProjectStores } from "../../src/doctor/store-hygiene.js";
+import { CWD_CHECK_DEADLINE_MS, cleanupStaleProjectStores } from "../../src/doctor/store-hygiene.js";
 import { updateProjectMeta } from "../../src/daemon/project-meta.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, stat: vi.fn(actual.stat) };
+});
 
 vi.mock("../../src/daemon/lifecycle.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/daemon/lifecycle.js")>()),
@@ -66,6 +72,32 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
     ...overrides,
   };
 }
+
+it("doctor finishes a hung cwd check and reports the other checks", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-doctor-cwd-deadline-"));
+  const paths = createLcmPaths(home);
+  const cwd = join(home, "unreachable");
+  updateProjectMeta(cwd, paths, { cwd });
+  vi.useFakeTimers();
+  const stat = vi.mocked(fsPromises.stat);
+  stat.mockImplementationOnce(() => new Promise(() => {}));
+  try {
+    const pending = runDoctor(minimalDeps({ lcmHome: home }));
+    await vi.waitFor(() => expect(stat).toHaveBeenCalledWith(cwd));
+    await vi.advanceTimersByTimeAsync(CWD_CHECK_DEADLINE_MS);
+    const results = await pending;
+    expect(stat).toHaveBeenCalledWith(cwd);
+    const result = results.find(r => r.name === "stale-project-stores");
+    expect(result?.message).toContain("1 project directories with unchecked cwd");
+    expect(result?.message).toContain("0 project directories with missing cwd");
+    expect(results.find(r => r.name === "orphan-summaries")?.status).toBe("pass");
+  } finally {
+    stat.mockReset();
+    stat.mockImplementation((await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).stat);
+    vi.useRealTimers();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 it("doctor counts missing metadata and all missing working directories without changing stores", async () => {
   const home = mkdtempSync(join(tmpdir(), "lcm-project-record-doctor-"));
