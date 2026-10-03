@@ -71,8 +71,11 @@ export function ensureToolLessonIncrementalSchema(db: DatabaseSync): void {
   try {
     db.exec(INCREMENTAL_TABLES);
     db.exec(SOURCE_TRIGGERS);
-    // Re-derive once on upgrade, including shapes from the previous format.
+    // Re-derive once on upgrade, including shapes from the previous format. An interrupted
+    // older publish can leave rows outside the published generation; versioned reads would
+    // expose them, and nothing marks them dirty, so they go first.
     db.exec(`
+      DELETE FROM tool_lessons WHERE generation IS NOT (SELECT generation FROM tool_lesson_state WHERE singleton = 1);
       INSERT INTO tool_lesson_changes SELECT session_id, call_id FROM transcript_tool_calls;
       INSERT INTO tool_lesson_totals (lesson_key, data)
         SELECT lesson_key, json_set(data, '$.count', 0, '$.sessionCounts', json('{}'))

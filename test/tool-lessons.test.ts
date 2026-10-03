@@ -199,7 +199,7 @@ it("rebuilds an older snapshot once and removes shapes with attached values", as
   await lessons.refresh("project");
   const legacy = { ...lessons.list()[0], shape: "mysql -psecret" };
   db.prepare("UPDATE tool_lessons SET lesson_key = ?, data = ?").run(JSON.stringify(["environment-rule", legacy.shape]), JSON.stringify(legacy));
-  const artifacts = db.prepare("SELECT type, name FROM sqlite_master WHERE name LIKE 'tool_lesson_%' AND name <> 'tool_lesson_state' ORDER BY type DESC").all();
+  const artifacts = db.prepare("SELECT type, name FROM sqlite_master WHERE name GLOB 'tool_lesson_*' AND name <> 'tool_lesson_state' ORDER BY type DESC").all();
   for (const artifact of artifacts) {
     if (artifact.type === "trigger" || artifact.type === "table") db.exec(`DROP ${String(artifact.type)} ${String(artifact.name)}`);
   }
@@ -208,6 +208,27 @@ it("rebuilds an older snapshot once and removes shapes with attached values", as
   expect(lessons.list()).toEqual([expect.objectContaining({ shape: "mysql -p <args>", count: 3 })]);
   runLcmMigrations(db);
   expect(await lessons.refresh("project")).toBe(0);
+});
+
+it("drops rows an interrupted older publish left outside the published generation", async () => {
+  for (const session of ["one", "two", "three"]) storedCall(session, "make build", "failed");
+  await lessons.refresh("project");
+  const { generation } = db.prepare("SELECT generation FROM tool_lesson_state").get() as { generation: number };
+  const [published] = lessons.list();
+  const orphan = (shape: string, at: number) => db.prepare("INSERT INTO tool_lessons (generation, lesson_key, kind, retired, last_seen, data) VALUES (?, ?, 'environment-rule', 0, ?, ?)")
+    .run(at, JSON.stringify(["environment-rule", shape]), published.lastSeen, JSON.stringify({ ...published, shape }));
+  orphan("make below", generation - 1);
+  orphan("make above", generation + 1);
+  const artifacts = db.prepare("SELECT type, name FROM sqlite_master WHERE name GLOB 'tool_lesson_*' AND name <> 'tool_lesson_state' ORDER BY type DESC").all();
+  for (const artifact of artifacts) {
+    if (artifact.type === "trigger" || artifact.type === "table") db.exec(`DROP ${String(artifact.type)} ${String(artifact.name)}`);
+  }
+  runLcmMigrations(db);
+  expect(db.prepare("SELECT count(*) AS n FROM tool_lessons WHERE generation <> ?").get(generation)!.n).toBe(0);
+  await new ToolLessonStore(db).refresh("project");
+  storedCall("four", "make build", "failed");
+  await new ToolLessonStore(db).refresh("project");
+  expect(lessons.list().map(lesson => lesson.shape)).toEqual([published.shape]);
 });
 
 it("derives project-scoped error→fix pairs from succeeded shell calls of the same shape", async () => {
