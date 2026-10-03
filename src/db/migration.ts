@@ -8,6 +8,7 @@ import { getLcmDbFeatures } from "./features.js";
 import { ensureTranscriptCursorTable } from "./transcript-cursor.js";
 import { ensureToolLessonIncrementalSchema } from "./tool-lesson-schema.js";
 import { installProjectTimeline } from "./project-timeline.js";
+import { installRecallUsage } from "./recall-usage.js";
 import { walkSubagentTranscripts } from "../subagent-attribution.js";
 import { extractCommandParts, type MessagePart } from "../transcript.js";
 
@@ -1188,6 +1189,7 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
   if (!fts5Available) {
     backfillPromotedTagsOnce(db, false);
     removePassiveIntentLabelsOnce(db, false);
+    installRecallUsage(db);
     return;
   }
 
@@ -1268,4 +1270,5 @@ function runLcmMigrationsInner(db: DatabaseSync, options?: LcmMigrationOptions):
       SELECT summary_id, content FROM summaries;
     `);
   }
+  installRecallUsage(db);
 }

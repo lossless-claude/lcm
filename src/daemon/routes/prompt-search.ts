@@ -292,7 +292,7 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
       const queryTerms = extractQueryTerms(query, paths, languageList(languages.authorLanguage));
       // Promoted memory is unioned across every checkout of this repository,
       // and each hit's recall feedback is read from the database that holds it.
-      const { hits: results, feedback: feedbackById } = searchPromotedGroup(validatedCwd, {
+      const { hits: results, feedback: feedbackById } = await searchPromotedGroup(validatedCwd, {
         query,
         limit: candidateLimit,
         terms: queryTerms,
