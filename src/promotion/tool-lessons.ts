@@ -240,7 +240,7 @@ export function maskBlockReason(reason: string): string {
     .replace(/\b\d+\b/g, "<id>");
 }
 
-function callShape(call: StoredCall): string | null {
+export function callShape(call: StoredCall): string | null {
   if (!SHELL_TOOLS.includes(call.name.replace(/^functions\./, "").toLowerCase()) || call.input === null || call.truncated) return null;
   return commandShape(call.input);
 }
@@ -261,7 +261,7 @@ function environmentLesson(call: StoredCall, project: string): ToolLesson | unde
   return lesson;
 }
 
-const CALL_SELECT = `SELECT t.rowid AS row_id, t.*,
+export const CALL_SELECT = `SELECT t.rowid AS row_id, t.*,
   COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', m.event_at), strftime('%Y-%m-%dT%H:%M:%fZ', m.created_at)) AS seen
   FROM transcript_tool_calls t JOIN messages m ON m.message_id = t.message_id`;
 

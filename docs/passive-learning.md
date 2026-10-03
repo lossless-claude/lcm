@@ -162,6 +162,46 @@ not shown until shadow measurement shows that showing them prevents repeats.
 Promoted event memories retain their confidence scores. Both use the configured age limit.
 Identical content appears once, retaining the first insight's metadata and order.
 
+### Environment-warning backtest
+
+Run `lcm stats --warning-backtest` from the project directory to measure hypothetical
+warnings against its stored calls. Stats reports memory measurements; doctor checks
+installation health. The backtest runs in the CLI, opens the current project's database
+read-only without migrations, and uses neither a daemon nor a model. It is opt-in because
+ordering and walking a large store can be slow. Ordinary stats does not run it.
+
+The replay joins `transcript_tool_calls` to their messages, excludes declared worker
+sessions, and uses the lessons' shell-tool recognition, command shapes and session
+threshold. Calls are ordered by transcript time (capture time when absent), then message
+id, then call rowid. A rule matches only when at least three distinct sessions failed or
+were blocked on that shape strictly before the call. A success after the first failure
+permanently retires it, even before activation. The retiring success itself can match;
+the replay evaluates a call before adding its evidence.
+
+The report shows:
+
+- **Matches:** shaped shell calls with an active rule at that position.
+- **Precision:** matched `failed` or `blocked` calls divided by matched `failed`,
+  `blocked` or `succeeded` calls. Matched `unknown`, `denied` and `interrupted` outcomes
+  are excluded from precision, with a separate count for each.
+- **Coverage:** matched `failed` or `blocked` shaped shell calls divided by all
+  `failed` or `blocked` shaped shell calls. It also counts failing calls without a match
+  and shell failures without a usable shape; the latter are outside coverage.
+- **Would-be context cost:** the SessionStart environment-rule line, with only the
+  session count and last failure date known before that call, measured in UTF-8 bytes
+  and the existing character-based token estimate. All matches, including excluded
+  precision outcomes, contribute cost. Totals, average per session with at least one
+  match, and the maximum for one session are reported. No-match sessions are outside
+  the average. An empty denominator is unknown; no stored calls yields a no-data report.
+
+The walk visits each call once in pages of at most 128 rows from one ordered SQLite
+cursor. Its application memory grows with distinct shapes, not calls or sessions.
+Distinct-session evidence and per-session costs use a private temporary disk database
+with a bounded cache, removed when closed. SQLite may sort the source calls on disk;
+the ordered walk itself is O(calls). No hook, lookup log or lesson snapshot is written.
+Nothing is injected or denied: pre-tool warnings stay off. Enabling them and choosing
+their execution path is a separate decision based on this report.
+
 ## Configuration
 
 Event promotion thresholds and the insight age limit are configurable in `~/.lossless-claude/config.json` under `compaction.promotionThresholds`:
