@@ -447,7 +447,15 @@ The **leaf pass** converts raw messages into leaf summaries:
 2. Cap the chunk at `leafChunkTokens` (default 20k tokens).
 3. Concatenate message content with event timestamps, falling back to capture time when event time is unknown.
 4. Resolve the most recent prior summary for continuity (passed as `previous_context` so the LLM avoids repeating known information).
-5. Send to the LLM with the leaf prompt.
+5. Derive error→fix pairs and masked block reasons from the calls whose messages
+   are in this chunk, using the deterministic shell lesson rules. Pass this
+   structured evidence beside the messages in the existing leaf summary call;
+   the project lesson snapshot is not used. The prompt asks for failed approaches
+   and what worked briefly in the summary text.
+   The JSON has an 8192-byte UTF-8 budget. Commands and reasons use the stored
+   input's 2048-byte cap and `[truncated]` suffix; whole entries that do not fit
+   are omitted and counted. Empty evidence leaves the prompt byte for byte
+   unchanged. Output-cut splitting derives evidence again for each half's messages.
 6. Normalize provider response blocks (Anthropic/OpenAI text, output_text, and nested content/summary shapes) into plain text.
 7. Reject an answer the model did not finish or that holds no text (see [Rejected answers](#rejected-answers)): the pass stops before anything is persisted.
 8. If the summary is larger than the input (LLM failure), retry with the aggressive prompt. If still too large, fall back to deterministic truncation.

@@ -1,11 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { ParsedMessage } from "../transcript.js";
-import { SHELL_TOOLS, type TranscriptToolCall } from "../tool-calls.js";
+import { SHELL_TOOLS, truncateToolInput, type TranscriptToolCall } from "../tool-calls.js";
 import type { ScrubEngine } from "../scrub.js";
 import { normalizeMessageContent } from "../message-content.js";
 import { getLcmDbFeatures } from "../db/features.js";
-
-const TRUNCATION_MARKER = "\n[truncated]";
 
 function storedInput(call: TranscriptToolCall, scrubber: ScrubEngine): { text: string | null; truncated: number } {
   const { input, inputLimit } = call;
@@ -13,10 +11,7 @@ function storedInput(call: TranscriptToolCall, scrubber: ScrubEngine): { text: s
   const text = normalizeMessageContent(scrubber.scrubWithCounts(input).text);
   const bytes = Buffer.from(text);
   if (inputLimit === undefined || bytes.length <= inputLimit) return { text, truncated: 0 };
-  let end = inputLimit - Buffer.byteLength(TRUNCATION_MARKER);
-  // A UTF-8 continuation byte cannot start the omitted suffix.
-  while ((bytes[end] & 0xc0) === 0x80) end--;
-  return { text: bytes.subarray(0, end).toString("utf8") + TRUNCATION_MARKER, truncated: 1 };
+  return { text: truncateToolInput(text, inputLimit), truncated: 1 };
 }
 
 /** Call ids join later results; only a verified stored message can establish a call. */

@@ -15,6 +15,9 @@ import { SummaryStore } from "../store/summary-store.js";
 import { resolveMaxOutputTokens, resolveTargetTokens } from "../summarize.js";
 import { SummaryRejectedError } from "../llm/summary-rejection.js";
 import { findUnsupportedDetails, type UnsupportedDetail } from "./unsupported-details.js";
+import { buildSummaryPrompt } from "../llm/prompt.js";
+import type { ToolOutcome } from "../tool-calls.js";
+import type { ToolSummaryContext } from "../tool-summary-context.js";
 
 // ── Corpus ─────────────────────────────────────────────────────────────────
 
@@ -27,6 +30,17 @@ export type CorpusMessage = {
   content: string;
   tokenCount: number;
   createdAt: string;
+  /** Stored, scrubbed selected inputs; call outcomes are joined before export. */
+  toolCalls?: CorpusToolCall[];
+};
+
+export type CorpusToolCall = {
+  callId: string;
+  name: string;
+  input: string | null;
+  outcome: ToolOutcome;
+  blockReason?: string | null;
+  truncated?: boolean;
 };
 
 export type PlantedFact = { name: string; pattern: string };
@@ -79,7 +93,7 @@ function fillerTurn(i: number): [string, string] {
  * the first turns so they sit outside the protected fresh tail and must
  * survive summarization to appear in the final context.
  */
-export function buildSyntheticSession(): CorpusSession {
+export function buildSyntheticSession(options: { toolFailures?: boolean } = {}): CorpusSession {
   const planted: [string, string][] = [
     [
       "Which cache library should we use for the summary lookups?",
@@ -127,7 +141,15 @@ export function buildSyntheticSession(): CorpusSession {
     push("assistant", a);
   }
 
-  return { label: "synthetic-planted", messages, plantedFacts: PLANTED_FACTS };
+  if (options.toolFailures) {
+    messages[0].toolCalls = [{ callId: "failure", name: "Bash", input: "npm install legacy-widget", outcome: "failed" }];
+    messages[1].toolCalls = [{ callId: "fix", name: "Bash", input: "npm install current-widget", outcome: "succeeded" }];
+    messages[2].toolCalls = [{
+      callId: "block", name: "Bash", input: "make deploy", outcome: "blocked",
+      blockReason: "PreToolUse:Bash hook error: deployments are disabled",
+    }];
+  }
+  return { label: options.toolFailures ? "synthetic-tool-failures" : "synthetic-planted", messages, plantedFacts: PLANTED_FACTS };
 }
 
 // ── Instrumented summarizer ────────────────────────────────────────────────
@@ -150,6 +172,11 @@ export type SummarizerCall = {
   aggressive: boolean;
   inputChars: number;
   source: string;
+  /** Actual request prompt, including the bounded structured evidence when present. */
+  prompt?: string;
+  toolContext?: ToolSummaryContext;
+  /** Exact command retention is a mechanical check; paraphrases need human review. */
+  toolPairRetention?: { failedCommand: string; succeededCommand: string; retained: boolean }[];
   targetTokens: number;
   outputChars: number;
   outputTokensEstimate: number;
@@ -173,9 +200,10 @@ export type SummarizerCall = {
 export type InstrumentedSummarizer = { summarize: LcmSummarizeFn; calls: SummarizerCall[] };
 
 /** Wrap a summarizer so every call is recorded with the same target the summarizer computed. */
-export function instrumentSummarizer(inner: LcmSummarizeFn): InstrumentedSummarizer {
+export function instrumentSummarizer(inner: LcmSummarizeFn, toolContext = true): InstrumentedSummarizer {
   const calls: SummarizerCall[] = [];
   const summarize: LcmSummarizeFn = async (text, aggressive, ctx: SummarizeContext = {}) => {
+    const requestContext = toolContext ? ctx : { ...ctx, toolContext: undefined };
     const isCondensed = ctx.isCondensed ?? false;
     const targetTokens =
       ctx.targetTokens ??
@@ -191,6 +219,8 @@ export function instrumentSummarizer(inner: LcmSummarizeFn): InstrumentedSummari
       aggressive: aggressive === true,
       inputChars: text.length,
       source: text,
+      prompt: buildSummaryPrompt(text, aggressive, requestContext),
+      toolContext: ctx.toolContext,
       targetTokens,
       outputChars: 0,
       outputTokensEstimate: 0,
@@ -213,7 +243,7 @@ export function instrumentSummarizer(inner: LcmSummarizeFn): InstrumentedSummari
     };
     try {
       const out = await inner(text, aggressive, {
-        ...ctx,
+        ...requestContext,
         onAttempt: (attempt) => {
           finishAttempt();
           currentAttempt = { ...attempt, latencyMs: 0, usageReports: 0 };
@@ -241,7 +271,11 @@ export function instrumentSummarizer(inner: LcmSummarizeFn): InstrumentedSummari
       call.outputTokensEstimate = Math.ceil(out.length / CHARS_PER_TOKEN);
       call.output = out;
       call.format = scoreSummary(out, call.depth);
-      call.unsupportedDetails = findUnsupportedDetails(text, out);
+      const evidence = requestContext.toolContext ? `${text}\n${JSON.stringify(requestContext.toolContext)}` : text;
+      call.unsupportedDetails = findUnsupportedDetails(evidence, out);
+      call.toolPairRetention = ctx.toolContext?.errorFixPairs.map(pair => ({
+        ...pair, retained: out.includes(pair.failedCommand) && out.includes(pair.succeededCommand),
+      }));
       call.emptyContentFallback = out === text.slice(0, 500);
       return out;
     } catch (err) {
@@ -296,6 +330,8 @@ export function checkPlantedFacts(
 // ── Run ────────────────────────────────────────────────────────────────────
 
 export type EvalRunResult = {
+  /** False only for the evaluation baseline; production always supplies window evidence. */
+  toolContextEnabled: boolean;
   label: string;
   model: string;
   /** Which bench provider produced this run — the same model scores differently per provider. */
@@ -346,6 +382,8 @@ export async function runEval(input: {
   run: number;
   /** Effective configured or detected corpus language used by production. */
   language?: string;
+  /** Evaluation baseline: suppress the supplemental input at the model boundary. */
+  toolContext?: boolean;
 }): Promise<EvalRunResult> {
   const { session, model, provider, variant, run, language } = input;
   const db = new DatabaseSync(":memory:");
@@ -368,9 +406,19 @@ export async function runEval(input: {
     // Keep original timestamps so the prompt's time headers match production.
     const setCreated = db.prepare("UPDATE messages SET created_at = ? WHERE message_id = ?");
     records.forEach((r, i) => setCreated.run(session.messages[i].createdAt, r.messageId));
+    const insertCall = db.prepare(`INSERT INTO transcript_tool_calls
+      (session_id, call_id, message_id, name, input, outcome, block_reason, truncated)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    records.forEach((record, index) => {
+      for (const call of session.messages[index].toolCalls ?? []) {
+        insertCall.run(conversation.sessionId, call.callId, record.messageId, call.name,
+          call.input, call.outcome, call.blockReason ?? null, Number(call.truncated ?? false));
+      }
+    });
     await summaryStore.appendContextMessages(cid, records.map((r) => r.messageId));
 
-    const { summarize, calls } = instrumentSummarizer(input.summarizer);
+    const toolContextEnabled = input.toolContext !== false;
+    const { summarize, calls } = instrumentSummarizer(input.summarizer, toolContextEnabled);
     // No scrubber: corpus content was already scrubbed at ingest and the export
     // copies stored content verbatim.
     const engine = new CompactionEngine(conversationStore, summaryStore, compactEngineConfig({ language }));
@@ -403,6 +451,7 @@ export async function runEval(input: {
       ? usages.reduce((total, usage) => total + (usage[phase] ?? 0), 0) : null;
 
     return {
+      toolContextEnabled,
       label: session.label,
       provider,
       variant,
