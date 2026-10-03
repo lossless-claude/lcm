@@ -16,6 +16,13 @@ const paths = createLcmPaths(lcmHome());
 const port = loadDaemonConfig(paths.configPath).daemon.port;
 
 describe("handlePreCompact", () => {
+  it("leaves five seconds for lifecycle startup inside the host's 120-second budget", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port, spawned: false });
+    const client = { post: vi.fn().mockResolvedValue({ summary: "" }) };
+    await handlePreCompact("{}", client as any, paths, port);
+    expect(client.post).toHaveBeenCalledWith("/compact", expect.anything(), { timeoutMs: 115_000 });
+  });
+
   it("returns exitCode 0 and summary when daemon healthy", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ summary: "Compacted 500 tokens" }) };

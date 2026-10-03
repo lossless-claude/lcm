@@ -11,7 +11,7 @@ async function start(restoreBody: unknown, options: { status?: number } = {}) {
     session: { id: vi.fn(async () => sessionId), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
     fs: { writeFile: vi.fn(async () => undefined) },
-    clock: { after: vi.fn() },
+    clock: { after: vi.fn(), sleep: vi.fn(() => new Promise<void>(() => {})) },
     ui: { log: vi.fn() },
     http: {
       fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {

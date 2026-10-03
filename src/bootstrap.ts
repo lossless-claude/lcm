@@ -7,7 +7,7 @@ import { createLcmPaths, type LcmPaths } from "./lcm-paths.js";
 import { PKG_VERSION } from "./daemon/version.js";
 import { cliInvocation, daemonNotice, type DaemonNotice } from "./hooks/fail-open.js";
 
-export type EnsureDaemonOutcome = { connected: boolean; ownership?: string; daemonVersion?: string };
+export type EnsureDaemonOutcome = { connected: boolean; ownership?: string; daemonVersion?: string; unresponsive?: boolean };
 
 export interface EnsureCoreDeps {
   configPath: string;

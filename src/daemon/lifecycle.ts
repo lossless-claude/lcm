@@ -8,6 +8,7 @@ import { readHold } from "./hold.js";
 export type EnsureDaemonOptions = {
   port: number;
   pidFilePath: string;
+  /** Overall connection/startup budget, including probes, PID waits and spawn wait. */
   spawnTimeoutMs: number;
   expectedVersion?: string;
   /** Build fingerprint (BUILD_ID) the daemon must report; a daemon without one is accepted. */
@@ -30,6 +31,8 @@ export type EnsureDaemonResult = {
   ownership?: DaemonOwnership;
   /** Version the running daemon reported, when one answered. */
   daemonVersion?: string;
+  /** A listener held a probe past its deadline; do not spawn over it. */
+  unresponsive?: boolean;
 };
 
 export type HealthResponse = {
@@ -332,17 +335,47 @@ export function describeUnansweredDaemon(port: number, logsDir: string): string 
   return `lcm daemon did not answer on port ${port} within 10s — check ${join(logsDir, "daemon.log")} and ${join(logsDir, "daemon.stderr")}`;
 }
 
+/** A silent listener must not hold a hook on undici's multi-minute headers timeout. */
+export const HEALTH_PROBE_TIMEOUT_MS = 500;
+
+type HealthProbe = { health: HealthResponse | null; notAnswering: boolean };
+
+async function probeDaemonHealth(
+  port: number,
+  fetchFn: typeof globalThis.fetch,
+  timeoutMs: number,
+): Promise<HealthProbe> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      (async (): Promise<HealthProbe> => {
+        try {
+          const res = await fetchFn(`http://127.0.0.1:${port}/health`, { signal: controller.signal });
+          if (!res.ok) return { health: null, notAnswering: true };
+          return { health: (await res.json()) as HealthResponse, notAnswering: false };
+        } catch {
+          return { health: null, notAnswering: false };
+        }
+      })(),
+      new Promise<HealthProbe>((resolve) => {
+        timer = setTimeout(() => {
+          resolve({ health: null, notAnswering: true });
+          controller.abort();
+        }, Math.max(0, Math.min(HEALTH_PROBE_TIMEOUT_MS, timeoutMs)));
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 export async function checkDaemonHealth(
   port: number,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
+  timeoutMs = HEALTH_PROBE_TIMEOUT_MS,
 ): Promise<HealthResponse | null> {
-  try {
-    const res = await fetchFn(`http://127.0.0.1:${port}/health`);
-    if (!res.ok) return null;
-    return (await res.json()) as HealthResponse;
-  } catch {
-    return null;
-  }
+  return (await probeDaemonHealth(port, fetchFn, timeoutMs)).health;
 }
 
 const DAEMON_STDERR_MAX_BYTES = 10 * 1024 * 1024;
@@ -367,6 +400,13 @@ function openDaemonStderr(pidFilePath: string): number | undefined {
 
 export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDaemonResult> {
   const fetchFn = opts._fetchOverride ?? globalThis.fetch;
+  // Connect-only callers pass a zero spawn budget, but still get one short probe.
+  const deadline = Date.now() + (opts.noSpawn ? HEALTH_PROBE_TIMEOUT_MS : opts.spawnTimeoutMs);
+  const remaining = () => Math.max(0, deadline - Date.now());
+  const pause = (ms: number) => sleep(Math.min(ms, remaining()));
+  const unavailable = (unresponsive = false): EnsureDaemonResult => ({
+    connected: false, port: opts.port, spawned: false, ...(unresponsive ? { unresponsive: true } : {}),
+  });
 
   // Step 0: A hold means someone claimed an offline window. Report not connected
   // without touching the daemon at all — every caller already degrades to a
@@ -376,7 +416,11 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }
 
   // Step 1: Check if daemon is already running via health check
-  const health = await checkDaemonHealth(opts.port, fetchFn);
+  if (!remaining()) return unavailable();
+  const probe = await probeDaemonHealth(opts.port, fetchFn, remaining());
+  if (probe.notAnswering) return unavailable(true);
+  if (!remaining()) return unavailable();
+  const health = probe.health;
   if (health?.status === "ok") {
     const ownership = daemonOwnership(health, { version: opts.expectedVersion, build: opts.expectedBuild });
     if (ownership === "incompatible") {
@@ -401,9 +445,10 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
       if (pid !== undefined && pid !== process.pid && isProcessAlive(pid)) {
         try {
           process.kill(pid, "SIGTERM");
-          await sleep(500);
+          await pause(500);
         } catch { /* ignore */ }
       }
+      if (!remaining()) return unavailable();
       cleanStalePid(opts.pidFilePath);
       // Fall through to spawn
     } else {
@@ -422,8 +467,12 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
     try {
       const pid = parseInt(readFileSync(opts.pidFilePath, "utf-8").trim(), 10);
       if (!isNaN(pid) && isProcessAlive(pid)) {
-        await sleep(1000);
-        const retry = await checkDaemonHealth(opts.port, fetchFn);
+        await pause(1000);
+        if (!remaining()) return unavailable();
+        const retryProbe = await probeDaemonHealth(opts.port, fetchFn, remaining());
+        if (retryProbe.notAnswering) return unavailable(true);
+        if (!remaining()) return unavailable();
+        const retry = retryProbe.health;
         if (retry?.status === "ok") {
           // Same verdict as the first probe: a daemon that was still publishing its PID
           // must not slip past the ownership check. An older one is replaced below.
@@ -435,8 +484,9 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
           // Signal the pid the daemon reports about itself, not the one read before the wait.
           const running = retry.pid ?? pid;
           if (running !== process.pid) {
-            try { process.kill(running, "SIGTERM"); await sleep(500); } catch { /* fall through to spawn */ }
+            try { process.kill(running, "SIGTERM"); await pause(500); } catch { /* fall through to spawn */ }
           }
+          if (!remaining()) return unavailable();
           cleanStalePid(opts.pidFilePath);
         }
       }
@@ -445,7 +495,7 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }
 
   // Step 3: Spawn daemon (unless skipped for testing)
-  if (opts._skipSpawn || opts.noSpawn || readHold(opts.pidFilePath)) {
+  if (!remaining() || opts._skipSpawn || opts.noSpawn || readHold(opts.pidFilePath)) {
     return { connected: false, port: opts.port, spawned: false };
   }
 
@@ -492,17 +542,18 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
   }
 
   // Step 4: Wait for health — only connect if version matches (if expected)
-  const deadline = Date.now() + opts.spawnTimeoutMs;
-  while (Date.now() < deadline) {
-    const h = await checkDaemonHealth(opts.port, fetchFn);
+  while (remaining()) {
+    const waiting = await probeDaemonHealth(opts.port, fetchFn, remaining());
+    if (!remaining()) break;
+    const h = waiting.health;
     if (h?.status === "ok") {
       if (isStaleDaemon(h, { version: opts.expectedVersion, build: opts.expectedBuild })) {
-        await sleep(300);
+        await pause(300);
         continue;
       }
       return { connected: true, port: opts.port, spawned: true };
     }
-    await sleep(300);
+    await pause(300);
   }
 
   return { connected: false, port: opts.port, spawned: true };
