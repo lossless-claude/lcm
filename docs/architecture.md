@@ -261,9 +261,21 @@ for lifecycle, queries and the deferred session-dirt and month-repacking trade-o
 
 ### Context items
 
-The **context_items** table maintains the ordered list of what the model sees for each conversation. Each entry is either a message reference or a summary reference, identified by ordinal.
+The **context_items** table maintains the ordered list of what the model sees for each conversation. Each entry is either a message reference or a summary reference, identified by ordinal. Ordinals are unique ordering keys within a conversation, not array positions; they may have gaps.
 
-When compaction creates a summary from a range of messages (or summaries), the source items are replaced by a single summary item. This keeps the context list compact while preserving ordering.
+When compaction creates a summary from a range of messages (or summaries), the source items are replaced by a single summary item at the range's first ordinal. Other items keep their ordinals. Replacement deletes only the selected range and inserts one row, synchronously in one transaction; it does not renumber the conversation. Existing dense stores already satisfy this contract and need no migration.
+
+Context readers use these keys as follows:
+
+| Reader | Behaviour with gaps |
+|---|---|
+| `SummaryStore.getContextItems`, range replacement and `getDistinctDepthsInContext` | Order by ordinal and compare actual ordinal bounds, including exclusive suffix cursors. |
+| `SummaryStore.appendContextMessages` and project timeline publication | Append at `MAX(ordinal) + 1`, after every surviving item. No reader infers the next or previous item from `ordinal + 1` or `ordinal - 1`. |
+| `CompactionEngine` fresh tail, leaf chunks and condensation | Count messages in the ordered array, then use their actual ordinals as boundaries. Contiguous chunks mean adjacent items in that array. Incremental token accounting tracks the last known ordinal, lowering it when a replacement removes the final item. |
+| Batch compaction selection | Computes its own dense `ROW_NUMBER()` over raw messages ordered by context ordinal. |
+| `src/search/language.ts` | Computes its own `ROW_NUMBER()` over message sequence numbers; it does not read context ordinals. |
+| Restore, compaction context export and protocol responses | `readContextWindow` orders by ordinal; window limits count rows through `ROW_NUMBER()`. Rendering and source coverage preserve item order and use message/summary ids, independently of gaps. |
+| Evaluation and context reset | Evaluation iterates ordered items. An explicit reset rebuilds the whole projection in message sequence order; it may produce dense ordinals. Project timeline reordering is confined to its reserved conversation. |
 
 ### The store surface
 

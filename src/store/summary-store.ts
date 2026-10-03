@@ -1016,16 +1016,8 @@ export class SummaryStore {
         )
         .run(conversationId, startOrdinal, summaryId);
 
-      // 3. Resequence to contiguous ordinals 0..n-1 in two set-based statements. The
-      //    transaction stays synchronous: a yield here would expose it to other requests
-      //    on this pooled connection. Negating first keeps every ordinal unique.
-      this.db.prepare("UPDATE context_items SET ordinal = -1 - ordinal WHERE conversation_id = ?").run(conversationId);
-      this.db.prepare(`UPDATE context_items SET ordinal = ranked.position
-        FROM (SELECT ordinal AS negated, ROW_NUMBER() OVER (ORDER BY ordinal DESC) - 1 AS position
-              FROM context_items WHERE conversation_id = ?) AS ranked
-        WHERE context_items.conversation_id = ? AND context_items.ordinal = ranked.negated`)
-        .run(conversationId, conversationId);
-
+      // Ordinals are ordering keys, not positions. Retain gaps so only this range
+      // is touched; the transaction stays synchronous on the pooled connection.
       this.db.exec("COMMIT");
     } catch (err) {
       this.db.exec("ROLLBACK");

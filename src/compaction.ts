@@ -286,15 +286,17 @@ export class CompactionEngine {
     let previousSummaryContent: string | undefined;
     let previousTokens = tokensBefore;
     let contextTokens = tokensBefore;
-    let contextItemCount = contextItems.length;
-    const updateTokens = async (pass: PassResult, replacedItemCount: number): Promise<number> => {
+    let lastContextOrdinal = contextItems[contextItems.length - 1].ordinal;
+    const updateTokens = async (pass: PassResult, replacedItems: ContextItemRecord[]): Promise<number> => {
       contextTokens += pass.tokenDelta;
-      contextItemCount -= replacedItemCount - 1;
       // Capture can append while the model releases the project mutation lease.
-      // Read only that suffix after replacement resequences the old context.
-      const appended = await this.summaryStore.getContextItems(conversationId, { afterOrdinal: contextItemCount - 1 });
+      // Sparse ordinals are ordering keys: a count cannot identify that suffix.
+      const appended = await this.summaryStore.getContextItems(conversationId, { afterOrdinal: lastContextOrdinal });
       contextTokens += await this.countStoredContextTokens(appended);
-      contextItemCount += appended.length;
+      // Replacing the last item lowers MAX(ordinal); the next append may reuse a gap.
+      const remainingLastOrdinal = replacedItems[replacedItems.length - 1].ordinal === lastContextOrdinal
+        ? replacedItems[0].ordinal : lastContextOrdinal;
+      lastContextOrdinal = appended[appended.length - 1]?.ordinal ?? remainingLastOrdinal;
       return contextTokens;
     };
     let isFirstLeafPass = true;
@@ -323,7 +325,7 @@ export class CompactionEngine {
         summarize,
         previousSummaryContent,
       );
-      const passTokensAfter = await updateTokens(leafResult, leafChunk.items.length);
+      const passTokensAfter = await updateTokens(leafResult, leafChunk.items);
       await this.persistCompactionEvents({
         conversationId,
         tokensBefore: passTokensBefore,
@@ -363,7 +365,7 @@ export class CompactionEngine {
         candidate.targetDepth,
         summarize,
       );
-      const passTokensAfter = await updateTokens(condenseResult, candidate.chunk.items.length);
+      const passTokensAfter = await updateTokens(condenseResult, candidate.chunk.items);
       await this.persistCompactionEvents({
         conversationId,
         tokensBefore: passTokensBefore,
