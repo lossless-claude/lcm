@@ -216,7 +216,9 @@ The summarizer's output budget is owned by a stable module registry keyed by
 session id. It survives poller restarts and charges output before answer delivery.
 The opt-in header executor uses a separate shadow account under the same configured
 limit, reserves equal B/C allowances and records fork overshoot. Unknown shadow
-usage refuses later shadow work, while ordinary allowance remains unchanged. See
+usage refuses later shadow work, while ordinary allowance remains unchanged.
+`session.end` prunes an ended id from both registries once none of its leases is
+pending, so a long-lived host does not keep one entry per past session. See
 [compaction header jobs](design/compaction-header.md).
 
 **Compaction shadow:** plugin `userConfig.compactionShadow` is boolean and defaults

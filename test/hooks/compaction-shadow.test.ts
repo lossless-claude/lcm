@@ -218,12 +218,15 @@ describe("opt-in compaction shadow hook", () => {
     const harness = await setup(), fork = Promise.withResolvers<any>(); await harness.append();
     harness.engine.model.fork.mockImplementation(() => fork.promise);
     await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    const { shadowSessionOutputBudget, _shadowSessionBudgetIdsForTesting } = await import("../../hooks/shadow-budget.js");
+    const budget = shadowSessionOutputBudget("session-a", SESSION_OUTPUT_CAP);
     await harness.fire("session.end", { sessionId: "session-a", reason: "other" });
+    expect(_shadowSessionBudgetIdsForTesting()).toEqual(["session-a"]);
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(2));
     fork.resolve({ isAnswered: true, text: JSON.stringify(workingHeader()), usage });
-    const { shadowSessionOutputBudget } = await import("../../hooks/shadow-budget.js");
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
-    expect(shadowSessionOutputBudget("session-a", SESSION_OUTPUT_CAP).snapshot()).toMatchObject({ spent: usage.output_tokens, usageUnknown: false, reserved: 0 });
+    expect(budget.snapshot()).toMatchObject({ spent: usage.output_tokens, usageUnknown: false, reserved: 0 });
+    expect(_shadowSessionBudgetIdsForTesting()).toEqual([]);
     expect(harness.engine.model.complete).not.toHaveBeenCalled();
   });
   it("does no admission or model work for an already aborted dispatch", async () => {
