@@ -80,9 +80,19 @@ its capture time. Declared summarize-worker sessions are excluded.
   The same token on another executable receives a placeholder; no attached
   value text is retained. Common command families such as git, npm, pip, cargo,
   docker and gh retain their first subcommand. Other executables retain their
-  executable and flags. Quoted words and stored argument arrays are supported.
-  Compound shell commands, substitutions, shell wrappers and truncated inputs
-  do not establish a shape.
+  executable and flags. Quoted arguments are values, including quoted subcommands;
+  stored argument arrays are supported. Leading `NAME=value` assignments are
+  dropped, as is a leading `cd <dir>` joined with `&&` or `;`. Directory and
+  assignment values never enter the shape. `sh`, `bash` and `zsh` wrappers using
+  `-c`, `-lc` or `-cl`, including stored argument arrays, use their inner command's
+  shape. Chains and pipelines join complete segment shapes with `&&`, `||`, `;`
+  or `|`; a wrapper's inner chain retains its grouping within an outer chain.
+  For example, `cd /tmp/project && npm run build && npm test` becomes
+  `npm run <args> && npm test`. If any segment cannot establish a shape, the
+  entire command has none. Unbalanced quotes, incomplete wrappers, substitutions,
+  redirections, shell comments and truncated inputs do not establish a shape. Wrapper nesting
+  is limited to eight levels; deeper nesting has no shape. Parsing and flag
+  ordering take linear work in the capped command length.
 - **Error→fix pair**: a `failed` or `blocked` shell call followed by the first
   `succeeded` call of the same shape in the same session, within the next
   20 stored calls. All calls count toward the window, including non-shell and
@@ -100,6 +110,10 @@ its capture time. Declared summarize-worker sessions are excluded.
   A success before the first failure does not retire it. Transcript time orders
   that evidence, with stored message and call order breaking ties.
 
+A chain's outcome is evidence only for its complete shape. Neither failure nor
+success identifies an individual segment's outcome, so it cannot establish a
+segment's rule, retire that rule or pair with a segment's success.
+
 `unknown`, `denied` and `interrupted` calls establish neither failure nor success
 for these lessons. In particular, an ordinary non-error sidecar event is not
 evidence of a successful command.
@@ -116,6 +130,10 @@ pairs whose window shortened; other sessions are retained. Worker exclusion
 also invalidates the affected session. Indexed evidence supplies first and last
 dates and environment-rule retirement without a project scan.
 The first refresh after upgrading an older snapshot re-derives existing calls once.
+The prefix, wrapper and chain shape upgrade also queues every stored call once on
+stores that already have incremental tables. The queue and its completion marker
+commit together; refresh replaces old-format keys through the same contribution
+journal and publication path. Reopening the store does not queue them again.
 Refresh processes pages of at most 128 changed calls or lessons and yields to the
 event loop between pages. The project mutation lease serializes refreshes;
 ordinary refresh work depends on changed evidence and its pairing windows,
