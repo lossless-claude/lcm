@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
-import { readProjectMetaIn } from "../daemon/project-meta.js";
+import { projectMetaPathIn, readProjectMetaIn } from "../daemon/project-meta.js";
 import { groupIndexPath } from "../daemon/project-group.js";
 import { readHold } from "../daemon/hold.js";
 import { openStandaloneLcmConnection } from "../db/connection.js";
@@ -67,20 +67,38 @@ function temporaryOrTestCwd(cwd: string): boolean {
     || path.split(sep).some(part => /^(?:e2e-test-|lossless-(?:ingest|compact|status)-)/.test(part));
 }
 
-function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked: string[]; recordless: RecordlessStore[] } {
+function staleProjectStores(paths: LcmPaths): {
+  stale: ProjectStore[]; unchecked: string[]; recordless: RecordlessStore[]; missingMeta: number; missingCwds: number;
+} {
   const stale: ProjectStore[] = [];
   const unchecked: string[] = [];
   const recordless: RecordlessStore[] = [];
+  let missingMeta = 0;
+  let missingCwds = 0;
   let entries;
   try { entries = readdirSync(paths.projectsDir, { withFileTypes: true }); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") unchecked.push(paths.projectsDir);
-    return { stale, unchecked, recordless };
+    return { stale, unchecked, recordless, missingMeta, missingCwds };
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dir = join(paths.projectsDir, entry.name);
     try {
-      const cwd = readProjectMetaIn(dir)?.cwd;
+      const meta = readProjectMetaIn(dir);
+      if (meta === null) {
+        try { statSync(projectMetaPathIn(dir)); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") missingMeta++;
+          else throw error;
+        }
+      }
+      const cwd = meta?.cwd;
+      let cwdError: NodeJS.ErrnoException | undefined;
+      if (typeof cwd === "string" && isAbsolute(cwd)) {
+        try { statSync(cwd); } catch (error) {
+          cwdError = error as NodeJS.ErrnoException;
+          if (cwdError.code === "ENOENT" || cwdError.code === "ENOTDIR") missingCwds++;
+        }
+      }
       // The store id is authoritative: re-hashing a vanished cwd loses its realpath,
       // so an alias can no longer reproduce the id used when the store was created.
       if (typeof cwd !== "string" || !isAbsolute(cwd) || !/^[a-f0-9]{64}$/.test(entry.name)) {
@@ -91,21 +109,23 @@ function staleProjectStores(paths: LcmPaths): { stale: ProjectStore[]; unchecked
         continue;
       }
       if (!temporaryOrTestCwd(cwd)) continue;
-      try { statSync(cwd); } catch (error) {
+      if (cwdError) {
         // Permission or I/O failures do not establish that a checkout vanished.
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        if (cwdError.code !== "ENOENT") throw cwdError;
         stale.push({ id: entry.name, dir, cwd });
       }
     } catch { unchecked.push(dir); }
   }
-  return { stale, unchecked, recordless };
+  return { stale, unchecked, recordless, missingMeta, missingCwds };
 }
 
 /** Read-only: a missing ordinary checkout may be an unmounted disk and is retained. */
 export function checkStaleProjectStores(paths: LcmPaths, verbose = false): CheckResult {
-  const { stale, unchecked, recordless } = staleProjectStores(paths);
+  const { stale, unchecked, recordless, missingMeta, missingCwds } = staleProjectStores(paths);
   // The full list belongs to the cleanup preview; doctor shows enough to recognise the pattern.
   const lines = doctorList(stale, verbose, store => `     ${store.id}: ${store.cwd}`);
+  lines.push(`     ${missingMeta} project directories without meta.json`);
+  lines.push(`     ${missingCwds} project directories with missing cwd`);
   if (verbose) lines.push(...unchecked.map(dir => `     ${dir}: not checked (unreadable or invalid project record)`));
   if (unchecked.length) lines.push(`     ${unchecked.length} stores not checked (unreadable or invalid project record)`);
   if (recordless.length) {
@@ -116,7 +136,7 @@ export function checkStaleProjectStores(paths: LcmPaths, verbose = false): Check
   if (stale.length || unchecked.length) lines.push("     Preview cleanup: lcm doctor --cleanup-stale-projects --dry-run");
   return {
     name: "stale-project-stores", category: "Storage",
-    status: stale.length || unchecked.length ? "warn" : "pass",
+    status: stale.length || unchecked.length || missingCwds ? "warn" : "pass",
     message: `${stale.length} stale project stores (missing temporary or test directories)` + (lines.length ? `\n${lines.join("\n")}` : ""),
   };
 }

@@ -5,7 +5,7 @@ import { LCM_MD_CONTENT } from "../../src/guidance.js";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
 import { PKG_VERSION } from "../../src/daemon/version.js";
 import { GUIDANCE_CHECK_NAMES } from "../../src/doctor/guidance-checks.js";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,6 +66,51 @@ function minimalDeps(overrides: Partial<Parameters<typeof runDoctor>[0]> = {}) {
     ...overrides,
   };
 }
+
+it("doctor counts missing metadata and all missing working directories without changing stores", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-project-record-doctor-"));
+  const paths = createLcmPaths(home);
+  const present = join(home, "present");
+  mkdirSync(present);
+  try {
+    const records = [
+      { cwd: present },
+      { cwd: join(home, "gone") },
+      { cwd: "/workspace/lcm-doctor-missing-checkout" },
+      {},
+    ];
+    for (const [i, record] of records.entries()) {
+      const dir = join(paths.projectsDir, `record-${i}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "meta.json"), JSON.stringify(record));
+    }
+    const corrupt = join(paths.projectsDir, "corrupt");
+    mkdirSync(corrupt);
+    writeFileSync(join(corrupt, "meta.json"), "corrupt bytes");
+    for (let i = 0; i < 2; i++) mkdirSync(join(paths.projectsDir, `missing-${i}`));
+    writeFileSync(join(paths.projectsDir, "ordinary-file"), "not a project directory");
+    const before = readdirSync(paths.projectsDir).sort();
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "stale-project-stores");
+    expect(result?.status).toBe("warn");
+    expect(result?.message).toContain("2 project directories without meta.json");
+    expect(result?.message).toContain("2 project directories with missing cwd");
+    expect(readdirSync(paths.projectsDir).sort()).toEqual(before);
+    for (const [i, record] of records.entries()) {
+      expect(readFileSync(join(paths.projectsDir, `record-${i}`, "meta.json"), "utf8")).toBe(JSON.stringify(record));
+    }
+    expect(readFileSync(join(corrupt, "meta.json"), "utf8")).toBe("corrupt bytes");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("doctor reports zero missing project records and working directories in an empty store", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-project-record-doctor-empty-"));
+  try {
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "stale-project-stores");
+    expect(result?.status).toBe("pass");
+    expect(result?.message).toContain("0 project directories without meta.json");
+    expect(result?.message).toContain("0 project directories with missing cwd");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
 
 it("doctor reports missing temporary and test project stores without changing them", async () => {
   const home = mkdtempSync(join(tmpdir(), "lcm-store-doctor-"));

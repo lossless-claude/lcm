@@ -403,7 +403,15 @@ PostToolUseFailure); the function-hooks module speaks the same routes through
 
 Capture itself happens on `POST /ingest`, reached from `session-end`, the Stop snapshot, and
 the periodic transcript scan (`scanForTranscripts` in `src/daemon/server.ts`, every 10
-minutes) that recovers a session whose `SessionEnd` never ran. The scan skips a session
+minutes) that recovers a session whose `SessionEnd` never ran.
+Project metadata reads are cached in memory by `meta.json` file identity, size and
+modification/change timestamps. Missing records are remembered by the project
+directory's identity and timestamps until that directory changes. Unchanged
+passes do not read `meta.json`; removed project directories leave the cache.
+The project walk yields after 10 ms of elapsed work, rather than a fixed directory
+count, and yields between transcripts within a project. A single synchronous
+metadata operation can exceed that budget; the scan yields before the next directory.
+The scan skips a session
 whose cwd no longer exists, including retained Codex recovery-guard retries, before
 calling `/ingest`. One `scan.missing_cwd` debug entry counts skipped session candidates
 per pass, without per-session warnings. The cwd is checked afresh on each pass, so a
@@ -430,8 +438,7 @@ sidecar is retried. Other subagent failures and failed tool-call model backfills
 scan asks `/ingest` to run before replying with `backfill_before_reply`) remain retryable on
 the next pass. A parent Claude 400 rejection, including a prefix-guard failure, is cached
 only in memory and retried when its fingerprint changes or the daemon restarts. The scan
-yields to the event loop between transcripts within a project as well as during the project
-walk. The scan never marks a session complete. The SessionStart catch-up sweep is a
+never marks a session complete. The SessionStart catch-up sweep is a
 different thing and never reaches `/ingest`: it finds conversations a killed session left
 uncompacted and asks `/compact` for them directly, with `skip_ingest: true`
 (`docs/configuration.md#sessionstart-catch-up-sweep`). PreCompact can Capture inside `/compact`, before lcm summarization, with
