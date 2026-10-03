@@ -180,10 +180,19 @@ lcm doctor --cleanup-stale-projects --apply
 lcm daemon start
 ```
 
+An active hold blocks automatic starts and `lcm daemon restart`. A refused restart
+exits non-zero and reports the hold's process id, reason and expiry. Release a hold
+explicitly with `lcm daemon start` or `lcm daemon restart --release-hold`; otherwise
+it remains in place until expiry.
+
 Cleanup defaults to a dry run even without `--dry-run`. It runs separately from
 normal diagnostics, so a preview neither starts a daemon nor applies other doctor
 repairs. `--apply` requires an active hold and refuses a running daemon or retained
-live CLI database activity. It moves
+live CLI database activity. It verifies the hold before listing project records,
+before each store's batch, and before each move. If the hold is lost, cleanup stops
+and reports every path already moved and its trash location. Those paths remain
+in trash for manual restoration under a new offline hold; the group-index
+transaction is rolled back. It moves
 each eligible project directory and its events database, including WAL/SHM files,
 to `<lcm-home>/trash/projects/<batch>/`, and removes that project's references from
 `group-index.sqlite`. It never deletes the stored data. The command prints the
