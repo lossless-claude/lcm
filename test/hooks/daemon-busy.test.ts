@@ -12,18 +12,20 @@ async function harness(failure: Error) {
       ? { stdout: "\n__CONFIG__\n{}\n__TMPDIR__\n/tmp", exitCode: 0 }
       : { stdout: "", stderr: "", exitCode: 0 }) },
     fs: { write: vi.fn(async () => undefined) },
-    clock: { sleep: vi.fn(async () => undefined) },
+    clock: { sleep: vi.fn(() => new Promise<void>(() => {})) },
     ui: { log: vi.fn() },
     http: { fetch: vi.fn()
       .mockRejectedValueOnce(failure)
       .mockResolvedValue({ ok: true, status: 200, text: "{}" }) },
   };
   const { register } = await import("../../hooks/lcm-hooks.js");
-  register(((event: string, ...args: any[]) => handlers.set(event, args.at(-1))) as any, {});
+  register(((event: string, ...args: any[]) => handlers.set(event, args.at(-1))) as any, { sessionSummarizerMaxOutputTokens: 0 });
   const fire = () => handlers.get("tool.call")!(engine, { tool: "Read", tool_use_id: "one" },
     vi.fn(async () => ({ result: "ok" })));
   const completeTurn = () => handlers.get("turn.complete")!(engine, {}, vi.fn(async () => ({ done: true })));
-  return { engine, fire, completeTurn };
+  const start = () => handlers.get("session.start")!(engine, {}, vi.fn(async () => ({})));
+  const restoreContext = () => handlers.get("prompt.context")!(engine, {}, vi.fn(async () => ({ blocks: [] })));
+  return { engine, fire, completeTurn, start, restoreContext };
 }
 
 /** A scripted answer: an HTTP status, or a failure that arrives after `afterMs`. */
@@ -55,7 +57,7 @@ async function startSession(script: { health: Answer; polls: Answer[]; hostEnvMs
       return { stdout: "\n__CONFIG__\n{}\n__TMPDIR__\n/tmp", exitCode: 0 };
     }) },
     fs: { write: vi.fn(async () => undefined) },
-    clock: { after: vi.fn((_ms: number, callback: () => void) => callback()), sleep: vi.fn(async () => undefined) },
+    clock: { after: vi.fn((_ms: number, callback: () => void) => callback()), sleep: vi.fn(() => new Promise<void>(() => {})) },
     ui: { log: vi.fn() },
     http: { fetch: vi.fn(async (url: string) => {
       if (url.endsWith("/health")) return answer(script.health);
@@ -77,7 +79,75 @@ async function startSession(script: { health: Answer; polls: Answer[]; hostEnvMs
 
 describe("function-hook daemon transport failures", () => {
   beforeEach(() => vi.resetModules());
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it("bounds a POST even when the host supplies no HTTP deadline, and warns once", async () => {
+    vi.useFakeTimers();
+    const { engine, fire } = await harness(new Error("unused"));
+    engine.http.fetch.mockReset().mockImplementation(() => new Promise(() => {}));
+    engine.clock.sleep.mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    let result: unknown;
+    void fire().then((value: unknown) => { result = value; });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toEqual({ result: "ok" });
+    const again = fire();
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(again).resolves.toEqual({ result: "ok" });
+    expect(engine.process.run).toHaveBeenCalledTimes(1); // Environment read, never a start.
+    expect(engine.http.fetch).toHaveBeenCalledTimes(2);
+    expect(engine.ui.log).toHaveBeenCalledTimes(1);
+    expect(engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("daemon busy"));
+  }, 2_000);
+
+  it("does not mistake its own short health deadline for a refused connection", async () => {
+    vi.useFakeTimers();
+    const { engine, start } = await harness(new Error("unused"));
+    engine.http.fetch.mockReset().mockImplementation((url: string) => url.endsWith("/health")
+      ? new Promise(() => {}) : Promise.resolve({ ok: true, status: 200, text: "{}" }));
+    engine.clock.sleep.mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    await expect(start()).resolves.toEqual({});
+    await vi.advanceTimersByTimeAsync(499);
+    expect(engine.ui.log).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(engine.ui.log).toHaveBeenCalledOnce();
+    expect(engine.process.run).toHaveBeenCalledTimes(1);
+  }, 2_000);
+
+  it("restores context that arrives after five seconds within the ten-second restore budget", async () => {
+    vi.useFakeTimers();
+    const { engine, restoreContext } = await harness(new Error("unused"));
+    engine.http.fetch.mockReset().mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve({ ok: true, status: 200, text: JSON.stringify({ context: "restored memory" }) }), 8_000);
+    }));
+    engine.clock.sleep.mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    let result: unknown;
+    void restoreContext().then((value: unknown) => { result = value; });
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toEqual({ blocks: [{ name: "lcm", text: "restored memory" }] });
+    expect(engine.http.fetch).toHaveBeenCalledOnce();
+    expect(engine.process.run).toHaveBeenCalledTimes(1);
+    expect(engine.ui.log).not.toHaveBeenCalled();
+  }, 2_000);
+
+  it("fails open after ten seconds when the module restore never answers", async () => {
+    vi.useFakeTimers();
+    const { engine, restoreContext } = await harness(new Error("unused"));
+    engine.http.fetch.mockReset().mockImplementation(() => new Promise(() => {}));
+    engine.clock.sleep.mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    let result: unknown;
+    void restoreContext().then((value: unknown) => { result = value; });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toEqual({ blocks: [] });
+    expect(engine.http.fetch).toHaveBeenCalledOnce();
+    expect(engine.process.run).toHaveBeenCalledTimes(1);
+    expect(engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("daemon busy"));
+  }, 2_000);
 
   it.each([
     ["a Node-shaped refusal", new TypeError("fetch failed", {

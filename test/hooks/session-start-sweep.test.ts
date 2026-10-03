@@ -13,7 +13,7 @@ describe("function-hook session.start", () => {
       session: { id: vi.fn(async () => sessionId), cwd: vi.fn(async () => "/proj") },
       process: { run: vi.fn(async () => ({ stdout: "", exitCode: 0 })) },
       fs: { writeFile: vi.fn(async () => undefined) },
-      clock: { after: vi.fn() },
+      clock: { after: vi.fn(), sleep: vi.fn(() => new Promise<void>(() => {})) },
       ui: { log: vi.fn() },
       http: {
         fetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {

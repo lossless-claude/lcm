@@ -272,6 +272,12 @@ function registerSessionEnd(on: On): void {
 let lastDaemonStartAt = 0;
 const DAEMON_START_COOLDOWN_MS = 60_000;
 const DAEMON_START_TIMEOUT_MS = 15_000;
+const HEALTH_PROBE_TIMEOUT_MS = 500;
+const DAEMON_POST_TIMEOUT_MS = 5_000;
+const RESTORE_TIMEOUT_MS = 10_000;
+/** The daemon's summary-job long poll holds for up to 25 seconds. */
+const SUMMARY_POLL_TIMEOUT_MS = 30_000;
+let warnedBusyDaemon = false;
 /** POSIX exit code for "command not found": no `lcm` binary on PATH. */
 const EXIT_COMMAND_NOT_FOUND = 127;
 /** `daemon start --automatic` reports an active hold with EX_TEMPFAIL. */
@@ -318,10 +324,31 @@ const REFUSED_WITHIN_MS = 1_000;
  */
 function isDaemonUnreachableError(error: unknown, startedAt: number): boolean {
   const fields = (value: unknown) =>
-    (typeof value === "object" && value !== null ? value : {}) as { code?: unknown; message?: unknown; cause?: unknown };
+    (typeof value === "object" && value !== null ? value : {}) as { code?: unknown; message?: unknown; cause?: unknown; name?: unknown };
   const failure = fields(error);
+  if (failure.name === "TimeoutError" || failure.name === "AbortError") return false;
   const text = [failure.code, fields(failure.cause).code, failure.message].map(String).join(" ");
   return /ECONNREFUSED|connection refused/i.test(text) || Date.now() - startedAt < REFUSED_WITHIN_MS;
+}
+
+/** Bound our wait even on hosts that do not put a deadline on HTTP fetches. */
+async function fetchDaemon(
+  $: EngineInterface, url: string, init: Parameters<EngineInterface["http"]["fetch"]>[1], timeoutMs: number,
+): ReturnType<EngineInterface["http"]["fetch"]> {
+  return Promise.race([
+    Promise.resolve().then(() => $.http.fetch(url, init)),
+    Promise.resolve().then(() => $.clock.sleep(timeoutMs)).then(() => {
+      const error = new Error("daemon did not answer within its deadline");
+      error.name = "TimeoutError";
+      throw error;
+    }),
+  ]);
+}
+
+function reportBusyDaemon($: EngineInterface): void {
+  if (warnedBusyDaemon) return;
+  warnedBusyDaemon = true;
+  $.ui.log("[lcm] daemon busy, did not answer; delivery is unconfirmed and the next capture will retry");
 }
 
 function delivery(outcome: PostOutcome): ["accepted" | "rejected" | "unconfirmed", string] {
@@ -343,16 +370,16 @@ async function postOnce($: EngineInterface, route: string, body: unknown): Promi
   try {
     const { port, token } = await readHostEnv($);
     startedAt = Date.now();
-    res = await $.http.fetch(`http://127.0.0.1:${port}${route}`, {
+    res = await fetchDaemon($, `http://127.0.0.1:${port}${route}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
-    });
+    }, route === "/restore" ? RESTORE_TIMEOUT_MS : DAEMON_POST_TIMEOUT_MS);
   } catch (error) {
     if (isDaemonUnreachableError(error, startedAt)) return { body: null, connectionFailed: true };
     // A timed-out or dropped call may still complete. The next Stop snapshot or scan
     // captures the turn, so starting another daemon or retrying now adds no safety.
-    $.ui.log(`[lcm] ${route}: daemon busy, did not answer; the next capture will retry`);
+    reportBusyDaemon($);
     return { body: null, connectionFailed: false };
   }
   if (res.status === 404) {
@@ -522,9 +549,9 @@ type PollOutcome =
 
 async function fetchNextJob($: EngineInterface, { port, token }: HostEnv, sessionId: string, shortPoll: boolean, worker = false) {
   const binding = worker ? `&caller_session_id=${encodeURIComponent(sessionId)}&cwd=${encodeURIComponent(await $.session.cwd())}&client=claude&transport=hook` : "";
-  return $.http.fetch(
+  return fetchDaemon($,
     `http://127.0.0.1:${port}/summarize-jobs/next?${worker ? "worker_id" : "session_id"}=${encodeURIComponent(sessionId)}${binding}${shortPoll ? "&wait_ms=0" : ""}`,
-    { headers: token ? { authorization: `Bearer ${token}` } : {} },
+    { headers: token ? { authorization: `Bearer ${token}` } : {} }, SUMMARY_POLL_TIMEOUT_MS,
   );
 }
 
@@ -753,8 +780,8 @@ function registerSessionStart(on: On, summaryCap: number): void {
     await flushHookObservations($, sessionId);
     void readHostEnv($).then(({ port }) => {
       const startedAt = Date.now();
-      return $.http.fetch(`http://127.0.0.1:${port}/health`).then(() => undefined,
-        (error: unknown) => isDaemonUnreachableError(error, startedAt) ? startDaemon($) : undefined);
+      return fetchDaemon($, `http://127.0.0.1:${port}/health`, undefined, HEALTH_PROBE_TIMEOUT_MS).then(() => undefined,
+        (error: unknown) => isDaemonUnreachableError(error, startedAt) ? startDaemon($) : reportBusyDaemon($));
     });
     // The housekeeping the SessionStart command hook awaited. Nothing reads its result,
     // and the session has no reason to wait for a prune.

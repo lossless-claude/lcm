@@ -7,11 +7,10 @@ import { observeHook } from "./observe.js";
 
 /**
  * Deadline for /compact — summarization calls an LLM, so allow minutes, not seconds.
- * Keep in sync with the PreCompact `timeout` in .claude-plugin/plugin.json; without a
- * matching host timeout Claude Code kills the hook at its 60s default and this deadline
- * never fires.
+ * Reserve five seconds for ensureDaemon inside the PreCompact `timeout: 120` in
+ * .claude-plugin/plugin.json. The host otherwise kills the hook before this deadline.
  */
-const COMPACT_TIMEOUT_MS = 120_000;
+const COMPACT_TIMEOUT_MS = 115_000;
 
 export async function handlePreCompact(stdin: string, client: DaemonClient, paths: LcmPaths, port?: number): Promise<{ exitCode: number; stdout: string }> {
   let input: Record<string, unknown>;
