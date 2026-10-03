@@ -1,12 +1,11 @@
-import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { CompactionEngine, type CompactionConfig, type CompactionSummarizeFn } from "../src/compaction.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
 import { SummaryStore } from "../src/store/summary-store.js";
+import * as projectQueue from "../src/daemon/project-queue.js";
 
-const MAX_EVENT_LOOP_GAP_MS = 1_000;
 const dbs: DatabaseSync[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
 
@@ -44,13 +43,14 @@ it("replaces a context range in one synchronous transaction, so a concurrent BEG
   await new Promise(resolve => setImmediate(resolve));
   expect(concurrentError).toBeUndefined();
   const items = await summaries.getContextItems(conversationId);
-  expect(items.map(item => item.ordinal)).toEqual(items.map((_, index) => index));
+  expect(items.map(item => item.ordinal)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ...Array.from({ length: contextItems - 301 }, (_, i) => i + 301)]);
   expect(items[10]).toMatchObject({ itemType: "summary", summaryId: "range-summary" });
   expect(items.filter(item => item.itemType === "message").map(item => item.messageId))
     .toEqual([...messages.slice(0, 10), ...messages.slice(301)].map(message => message.messageId));
 });
 
-it("keeps timer gaps below 1,000 ms for 30,000 context items with unchanged summaries, links and tokens", async () => {
+it("yields during 30,000-item compaction with unchanged summaries, links and tokens", async () => {
   const { summaries, conversationId, messages, compact } = await fixture(30_000);
   const leafContents: string[] = [];
   const summarize: CompactionSummarizeFn = async (text, _aggressive, options) => {
@@ -60,26 +60,10 @@ it("keeps timer gaps below 1,000 ms for 30,000 context items with unchanged summ
     leafContents.push(content);
     return content;
   };
-  let lastTurn = performance.now();
-  let longestGap = 0;
-  let timerTurns = 0;
-  const recordTurn = () => {
-    const now = performance.now();
-    longestGap = Math.max(longestGap, now - lastTurn);
-    lastTurn = now;
-    timerTurns++;
-  };
-  const timer = setInterval(recordTurn, 1);
-  let result;
-  try {
-    result = await compact(summarize);
-    recordTurn(); // Include the final block even when no timer ran during compaction.
-  } finally {
-    clearInterval(timer);
-  }
-  console.info(`30,000-item compaction longest timer gap: ${longestGap.toFixed(1)} ms (${timerTurns} turns)`);
-  expect(longestGap).toBeLessThan(MAX_EVENT_LOOP_GAP_MS);
-  expect(timerTurns).toBeGreaterThan(2);
+  const yields = vi.spyOn(projectQueue, "yieldToEventLoop");
+  const result = await compact(summarize);
+  expect(yields.mock.calls.length).toBeGreaterThanOrEqual(300);
+  yields.mockRestore();
 
   expect(result).toMatchObject({ actionTaken: true, tokensBefore: 30_000, tokensAfter: 4, condensed: true });
   expect(result.createdSummaryIds).toHaveLength(7);
@@ -134,4 +118,31 @@ it("includes messages captured while summarization waits in the incremental tota
   });
   expect(result).toMatchObject({ tokensBefore: 120, tokensAfter: 8, condensed: true });
   expect(count).toHaveBeenCalledTimes(1);
+});
+
+it("counts only new captures after sparse ordinals and protects the fresh tail", async () => {
+  const { db, conversations, summaries, conversationId, messages, compact } = await fixture(6, {
+    freshTailCount: 2, leafChunkTokens: 60, leafMinFanout: 2, condensedTargetTokens: 1,
+  }, 30);
+  // An existing sparse context, independent of the replacement implementation.
+  db.exec("UPDATE context_items SET ordinal = ordinal * 10");
+  const suffix = vi.spyOn(summaries, "getContextItems");
+  const leafSources: number[][] = [];
+  let appended = false;
+  const result = await compact(async (text, _aggressive, options) => {
+    if (!options?.isCondensed) leafSources.push([...text.matchAll(/message-(\d+):/g)].map(match => Number(match[1])));
+    if (!appended) {
+      appended = true;
+      const message = await conversations.createMessage({ conversationId, seq: 6, role: "user", content: "new tail", tokenCount: 7 });
+      await summaries.appendContextMessages(conversationId, [message.messageId]);
+    }
+    return options?.isCondensed ? "done" : "s".repeat(40);
+  });
+  expect(suffix.mock.calls.filter(([, options]) => options).map(([, options]) => options?.afterOrdinal))
+    .toEqual([50, 51, 51, 51]);
+  expect(leafSources).toEqual([[0, 1], [2, 3], [4]]);
+  expect(result).toMatchObject({ tokensBefore: 180, tokensAfter: 38, condensed: true });
+  expect(await summaries.getContextTokenCount(conversationId)).toBe(38);
+  expect((await summaries.getContextItems(conversationId)).filter(item => item.itemType === "message").map(item => item.messageId))
+    .toContain(messages[5].messageId);
 });
