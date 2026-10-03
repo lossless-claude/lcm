@@ -18,7 +18,8 @@ import { createDaemon } from "../src/daemon/server.js";
 import { loadDaemonConfig } from "../src/daemon/config.js";
 import { ensureAuthToken } from "../src/daemon/auth.js";
 import { DaemonClient } from "../src/daemon/client.js";
-import type { SummarizeJob } from "../src/daemon/summarize-jobs.js";
+import { SummarizeJobStore, type SummarizeJob } from "../src/daemon/summarize-jobs.js";
+import { createPoolSummarizeJobHandler } from "../src/daemon/routes/summarize-jobs.js";
 import { createProviderChain } from "../src/llm/provider-chain.js";
 
 describe("unsupported summary details", () => {
@@ -244,6 +245,9 @@ describe("session-pool comparison through the daemon", () => {
     ensureAuthToken(paths.tokenPath);
     const daemon = await createDaemon(config, { paths, tokenPath: paths.tokenPath });
     const client = new DaemonClient(`http://127.0.0.1:${daemon.address().port}`, paths.tokenPath);
+    // The daemon's own store gives a queued job 20 s to be claimed; with no worker the test would wait that out in real time.
+    const unclaimed = available ? undefined : new SummarizeJobStore(50);
+    if (unclaimed) daemon.registerRoute("POST", "/summarize-jobs/pool", createPoolSummarizeJobHandler(unclaimed));
     const controller = new AbortController();
     const jobs: SummarizeJob[] = [];
     const workerCwd = join(dir, "worker");
@@ -306,6 +310,7 @@ describe("session-pool comparison through the daemon", () => {
       controller.abort();
       await worker;
       await daemon.stop();
+      unclaimed?.close();
       endpoint.closeAllConnections();
       await new Promise<void>((resolve) => endpoint.close(() => resolve()));
       rmSync(dir, { recursive: true, force: true });
