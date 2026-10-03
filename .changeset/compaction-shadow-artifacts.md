@@ -11,3 +11,5 @@ Require transcript-owned project metadata, list-valued corpus policies and stric
 Skip symlinked ancestors during shadow recovery and validate real-path containment before recursive cleanup. Preserve validated correlation identifiers, reject sensitive or malformed identifiers, and bind admission retries to a raw identity digest so redaction cannot collapse distinct requests.
 
 Validate model names with one shared rule and retain them exactly in cuts, arm records, usage attempts and evaluation reports; scrub free text while preserving model identifiers.
+
+Exclude sessions containing any excluded row cwd before loading evidence, validate every exported identifier including historical UUIDs, and preserve supersession identifiers. Bind admission retries to raw engine messages and skip linked metadata files during recovery.

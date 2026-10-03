@@ -8,8 +8,9 @@ import { corpusConfigPath, readCorpusConfig, isExcluded } from "../corpus-policy
 import { digest, object, objectHash, validUsage, validHeader, HEADER_SECTIONS, type ShadowUsage, type ArmRecord } from "../../daemon/shadow/types.js";
 import { allowedProjects, shadowCandidates, discoverTranscripts, historicalCuts, type CutCandidate, type EvaluationCut, type TranscriptInput, type ReadCounts } from "./reader.js";
 import { checkFaithfulness, renderHeader } from "./faithfulness.js";
-import { recordedTranscriptCwd } from "./transcript-owner.js";
+import { transcriptOwnership } from "./transcript-owner.js";
 import { continuationStub } from "./continuation.js";
+import { validateCutIdentifiers } from "./identifiers.js";
 
 const TOKENS_PER_MILLION = 1_000_000;
 const CHARS_PER_TOKEN = 4;
@@ -65,7 +66,7 @@ function scrubCut(cut: EvaluationCut, scrubber: ScrubEngine): EvaluationCut {
   const header = (value: ArmRecord["header"]) => value === null ? null : { ...value, ...Object.fromEntries(
     HEADER_SECTIONS.map(key => [key, value[key].map(item => ({
       ...item, text: text(item.text), sources: item.sources.map(source => typeof source === "string" ? (/^\[(?:raw:[A-Za-z0-9_-]+:\d+|sum:sum_[A-Za-z0-9_-]+)\]$/.test(source) ? source : text(source)) : { quote: text(source.quote) }),
-      ...(item.status ? { status: text(item.status) } : {}), ...(item.fix ? { fix: text(item.fix) } : {}), ...(item.supersedes ? { supersedes: item.supersedes.map(text) } : {}),
+      ...(item.status ? { status: text(item.status) } : {}), ...(item.fix ? { fix: text(item.fix) } : {}),
     }))])) };
   return { ...cut, originals: cut.originals.map(row => ({ ...row, text: text(row.text) })), window: cut.window === null ? null : text(cut.window),
     native: cut.native === null ? null : { ...cut.native, text: text(cut.native.text), tail: cut.native.tail.map(row => ({ ...row, text: text(row.text) })) },
@@ -192,23 +193,28 @@ async function loadCuts(options: Phase1Options, { policy, seed, limit }: { polic
   const config = loadDaemonConfig(options.paths.configPath), scrubbers = new Map<string, ScrubEngine>();
   for (const cwd of cwds) scrubbers.set(projectId(cwd), await ScrubEngine.forProject(config.security.sensitivePatterns, projectDir(cwd, options.paths)));
   const histories: EvaluationCut[] = [];
-  for (const input of transcriptInputs(options, cwds)) appendHistorical(input, { policy, ids, histories, counts });
-  const candidates = shadowCandidates(cwds, options.paths, counts);
-  for (const candidate of candidates) pairNative(candidate, { histories, scrubbers, counts });
-  candidates.push(...histories.map(cut => ({ projectId: cut.projectId, sessionId: cut.sessionId, cutId: cut.cutId, load: () => cut })));
+  const blockedSessions = new Set<string>();
+  for (const input of transcriptInputs(options, cwds)) await appendHistorical(input, { policy, ids, histories, counts, blockedSessions });
+  const candidates = shadowCandidates(cwds, options.paths, { counts, blockedSessions });
+  const admittedHistories = histories.filter(cut => !blockedSessions.has(cut.sessionId));
+  for (const candidate of candidates) pairNative(candidate, { histories: admittedHistories, scrubbers, counts });
+  candidates.push(...admittedHistories.map(cut => ({ projectId: cut.projectId, sessionId: cut.sessionId, cutId: cut.cutId, load: () => cut })));
   const cuts: EvaluationCut[] = [];
   for (const candidate of sample(candidates, seed, limit)) {
-    try { cuts.push(scrubCut(candidate.load(), scrubbers.get(candidate.projectId)!)); } catch { counts.invalidSources++; }
+    try {
+      const cut = candidate.load(); validateCutIdentifiers(cut);
+      cuts.push(scrubCut(cut, scrubbers.get(candidate.projectId)!));
+    } catch { counts.invalidSources++; }
   }
   return { cuts, counts };
 }
 
-function appendHistorical(input: TranscriptInput, context: { policy: ReturnType<typeof readCorpusConfig>; ids: Set<string>; histories: EvaluationCut[]; counts: ReadCounts }): void {
-  if (isExcluded(input.cwd, context.policy.exclude) || isExcluded(input.path, context.policy.exclude)) return;
+async function appendHistorical(input: TranscriptInput, context: { policy: ReturnType<typeof readCorpusConfig>; ids: Set<string>; histories: EvaluationCut[]; counts: ReadCounts; blockedSessions: Set<string> }): Promise<void> {
+  const excluded = (cwd: string) => isExcluded(cwd, context.policy.exclude) || context.policy.holdout.has(projectId(cwd));
+  if (excluded(input.cwd) || isExcluded(input.path, context.policy.exclude)) { context.blockedSessions.add(input.sessionId); return; }
   try {
-    const cwd = recordedTranscriptCwd(input.path);
-    if (!cwd) { context.counts.invalidSources++; return; }
-    if (isExcluded(cwd, context.policy.exclude)) return;
+    const { cwd, excluded: blocked } = await transcriptOwnership(input.path, excluded);
+    if (blocked) { context.blockedSessions.add(input.sessionId); return; }
     if (!context.ids.has(projectId(cwd))) return;
     context.histories.push(...historicalCuts({ ...input, cwd }));
   } catch { context.counts.invalidSources++; }

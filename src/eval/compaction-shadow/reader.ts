@@ -7,6 +7,7 @@ import { parseClaudeTranscriptRecord } from "../../transcript.js";
 import { isExcluded, type CorpusConfig } from "../corpus-policy.js";
 import { readShadowJson } from "../../daemon/shadow/store.js";
 import { digest, object, objectHash, safeId, type ArmRecord, type NativeRecord, type ShadowManifest, type ShadowOriginal, type ShadowSnapshot } from "../../daemon/shadow/types.js";
+import { requireIdentifier, validUuid } from "./identifiers.js";
 
 export type TranscriptInput = { cwd: string; sessionId: string; path: string };
 export type EvaluationCut = {
@@ -49,26 +50,29 @@ function validSnapshot(snapshot: ShadowSnapshot, manifest: ShadowManifest): bool
   if (!Array.isArray(snapshot.originals)) return false;
   return snapshot.window?.coverage.valid && !snapshot.window.coverage.uncoveredMessageIds.length;
 }
-export function shadowCandidates(cwds: readonly string[], paths: LcmPaths, counts: ReadCounts): CutCandidate[] {
-  return cwds.flatMap(cwd => projectCandidates(cwd, paths, counts));
+type CandidateContext = { counts: ReadCounts; blockedSessions: Set<string> };
+export function shadowCandidates(cwds: readonly string[], paths: LcmPaths, context: CandidateContext): CutCandidate[] {
+  return cwds.flatMap(cwd => projectCandidates(cwd, paths, context));
 }
-function projectCandidates(cwd: string, paths: LcmPaths, counts: ReadCounts): CutCandidate[] {
+function projectCandidates(cwd: string, paths: LcmPaths, context: CandidateContext): CutCandidate[] {
   const root = join(projectDir(cwd, paths), "compaction-shadow");
   if (!directory(root)) return [];
-  return readdirSync(root).flatMap(entry => cutCandidate({ cwd, root, entry }, counts));
+  return readdirSync(root).flatMap(entry => cutCandidate({ cwd, root, entry }, context));
 }
-function cutCandidate({ cwd, root, entry }: { cwd: string; root: string; entry: string }, counts: ReadCounts): CutCandidate[] {
+function cutCandidate({ cwd, root, entry }: { cwd: string; root: string; entry: string }, { counts, blockedSessions }: CandidateContext): CutCandidate[] {
   const path = join(root, entry);
   if (!safeId(entry) || !directory(path)) return [];
   try {
     const manifest = readShadowJson<ShadowManifest>(join(path, "manifest.json"));
+    if (blockedSessions.has(manifest.sessionId)) return [];
     validateCutManifest(manifest, { cwd, entry });
     const native = existsSync(join(path, "native.json")) ? readShadowJson<NativeRecord>(join(path, "native.json")) : null;
     return [{ projectId: manifest.projectId, sessionId: manifest.sessionId, cutId: entry, boundaryUuid: manifest.boundaryUuid, native, load: () => loadShadow(path, manifest) }];
   } catch { counts.invalidSources++; return []; }
 }
 function validateCutManifest(manifest: ShadowManifest, { cwd, entry }: { cwd: string; entry: string }): void {
-  if (manifest.version !== 1 || !safeId(manifest.sessionId)) throw new Error("Invalid cut version/session");
+  if (manifest.version !== 1 || !validUuid(manifest.sessionId)) throw new Error("Invalid cut version/session");
+  requireIdentifier(manifest.boundaryUuid, validUuid);
   if (manifest.cwd !== cwd || manifest.projectId !== projectId(cwd)) throw new Error("Invalid project binding");
   if (manifest.cutId !== entry) throw new Error("Invalid cut identity");
 }
@@ -121,7 +125,7 @@ function realUserRow(row: Record<string, unknown>, role: string): boolean {
   return row.type === "user" && role === "user" && !row.isMeta;
 }
 export function historicalCuts(input: TranscriptInput): EvaluationCut[] {
-  if (!isAbsolute(input.path) || !safeId(input.sessionId) || lstatSync(input.path).isSymbolicLink()) throw new Error("Invalid transcript metadata");
+  if (!isAbsolute(input.path) || !validUuid(input.sessionId) || lstatSync(input.path).isSymbolicLink()) throw new Error("Invalid transcript metadata");
   const raw = readFileSync(input.path, "utf8"), rows = new Map<string, HistoryRecord>();
   indexHistory(raw, input.sessionId, rows);
   const result: EvaluationCut[] = [];
@@ -140,6 +144,7 @@ function indexHistory(raw: string, sessionId: string, rows: Map<string, HistoryR
     if (!line.trim()) continue;
     const row: unknown = JSON.parse(line);
     validateHistoryIdentity(row, sessionId);
+    validateRowIdentifiers(row);
     if (typeof row.uuid !== "string") continue;
     if (rows.has(row.uuid)) throw new Error("Duplicate transcript uuid");
     rows.set(row.uuid, { row, line, ordinal });
@@ -148,4 +153,8 @@ function indexHistory(raw: string, sessionId: string, rows: Map<string, HistoryR
 }
 function validateHistoryIdentity(row: unknown, sessionId: string): asserts row is Record<string, unknown> {
   if (!object(row) || row.sessionId !== undefined && row.sessionId !== sessionId) throw new Error("Transcript identity mismatch");
+}
+function validateRowIdentifiers(row: Record<string, unknown>): void {
+  if (row.uuid !== undefined) requireIdentifier(row.uuid, validUuid);
+  if (row.parentUuid !== undefined && row.parentUuid !== null) requireIdentifier(row.parentUuid, validUuid);
 }

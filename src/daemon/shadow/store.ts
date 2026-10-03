@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { LcmPaths } from "../../lcm-paths.js";
 import { projectDir } from "../project.js";
-import { readProjectMetaIn } from "../project-meta.js";
+import { readProjectMetaInNoLinks } from "../project-meta.js";
 import { HTTP, objectHash, safeId, type ArmRecord, type NativeRecord, type ShadowManifest, type ShadowSnapshot } from "./types.js";
 
 export class ShadowStoreError extends Error {
@@ -11,6 +11,10 @@ export class ShadowStoreError extends Error {
 }
 function directory(path: string): boolean {
   try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); }
+  catch { return false; }
+}
+function regularFile(path: string): boolean {
+  try { const stat = lstatSync(path); return stat.isFile() && !stat.isSymbolicLink(); }
   catch { return false; }
 }
 function verifyDirectories(paths: string[]): void {
@@ -32,7 +36,7 @@ function removeShadowDirectory(path: string, projectsDir: string): void {
   rmSync(path, { recursive: true, force: true });
 }
 export function readShadowJson<T>(path: string): T {
-  if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) throw new ShadowStoreError("Invalid shadow artifact", HTTP.unprocessable);
+  if (!regularFile(path)) throw new ShadowStoreError("Invalid shadow artifact", HTTP.unprocessable);
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 function atomicWrite(path: string, value: unknown): void {
@@ -108,7 +112,7 @@ export function recoverShadowProject(store: CompactionShadowStore, cwd: string, 
 }
 function recoverShadowEntry(path: string, context: { cwd: string; owner: string; now: number; projectsDir: string }): { changed: boolean; failed: boolean } {
   try {
-    if (!directory(path) || !existsSync(join(path, "manifest.json"))) return { changed: false, failed: false };
+    if (!directory(path) || !regularFile(join(path, "manifest.json"))) return { changed: false, failed: false };
     const file = join(path, "manifest.json"), cut = readShadowJson<ShadowManifest>(file);
     if (!recoverableCut(cut, context.cwd, path)) return { changed: false, failed: false };
     if (Date.parse(cut.expiresAt) <= context.now) { removeShadowDirectory(path, context.projectsDir); return { changed: true, failed: false }; }
@@ -124,14 +128,16 @@ export function recoverShadowProjects(store: CompactionShadowStore, paths: LcmPa
   if (!directory(paths.projectsDir)) return 0;
   let failures = 0;
   for (const entry of readdirSync(paths.projectsDir)) {
-    const path = join(paths.projectsDir, entry);
-    if (![path, join(path, "compaction-shadow")].every(directory)) continue;
-    try {
-      const cwd = readProjectMetaIn(path)?.cwd;
-      if (typeof cwd === "string" && projectDir(cwd, paths) === path) failures += recoverShadowProject(store, cwd);
-    } catch { failures++; }
+    failures += recoverProjectAt(join(paths.projectsDir, entry), { store, paths });
   }
   return failures;
+}
+function recoverProjectAt(path: string, { store, paths }: { store: CompactionShadowStore; paths: LcmPaths }): number {
+  if (![path, join(path, "compaction-shadow")].every(directory)) return 0;
+  try {
+    const cwd = readProjectMetaInNoLinks(path)?.cwd;
+    return typeof cwd === "string" && projectDir(cwd, paths) === path ? recoverShadowProject(store, cwd) : 0;
+  } catch { return 1; }
 }
 function recoverableCut(cut: ShadowManifest, cwd: string, path: string): boolean {
   return cut.version === 1 && cut.cwd === cwd && basename(path) === cut.cutId;

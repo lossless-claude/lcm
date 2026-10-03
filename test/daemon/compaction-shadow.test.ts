@@ -259,6 +259,23 @@ describe("daemon compaction shadow artifacts", () => {
     const results = await Promise.all([post("start", { ...startInput(), model: "sonnet" }), post("start", { ...startInput(), model: "opus" })]);
     expect(results.map(result => result.status).sort()).toEqual([200, 409]);
   });
+  it.each(["text", "handle", "role", "order", "added", "removed"])("rejects admission retries with changed raw engine message %s", async field => {
+    await daemon.stop(); await boot(["PRIVATE_WORD", "^(?:private-one|private-two)$"]);
+    const messages = [{ role: "user", text: "private-one", handle: "handle_1" }, { role: "assistant", text: "safe", handle: "handle_2" }];
+    const request = { ...startInput(), engine_messages: messages };
+    const first = await post("start", request); expect(first.status).toBe(200);
+    expect(first.body.snapshot.engineMessages[0].text).toBe("[REDACTED]");
+    const changed = structuredClone(messages);
+    const mutations: Record<string, () => void> = {
+      text: () => { changed[0].text = "private-two"; }, handle: () => { changed[0].handle = "handle_3"; },
+      role: () => { changed[0].role = "assistant"; }, order: () => { changed.reverse(); },
+      added: () => { changed.push({ role: "user", text: "extra", handle: "handle_3" }); }, removed: () => { changed.pop(); },
+    };
+    mutations[field]();
+    expect((await post("start", { ...request, engine_messages: changed })).status).toBe(409);
+    expect((await post("start", request)).status).toBe(200);
+    expect(artifact("snapshot.json")).toEqual(first.body.snapshot);
+  });
   it("marks stranded records incomplete on daemon restart", async () => {
     await start(); await daemon.stop(); await boot();
     expect(artifact("manifest.json").state).toBe("incomplete");
@@ -284,6 +301,19 @@ describe("daemon compaction shadow artifacts", () => {
     await boot();
     expect(existsSync(file)).toBe(true);
     expect(readFileSync(file, "utf8")).toBe(before);
+    expect((await fetch(`http://127.0.0.1:${daemon.address().port}/health`)).status).toBe(200);
+  });
+  it.each(["meta", "manifest"])("does not use a linked %s file during recovery", async field => {
+    await start(); await daemon.stop();
+    const manifest = artifact("manifest.json"); manifest.expiresAt = new Date(0).toISOString();
+    writeFileSync(join(dir(), "manifest.json"), JSON.stringify(manifest));
+    const path = field === "meta" ? join(projectDir(cwd, paths), "meta.json") : join(dir(), "manifest.json");
+    const outside = join(root, "outside.json");
+    renameSync(path, outside); symlinkSync(outside, path);
+    const before = readFileSync(outside, "utf8");
+    await boot();
+    expect(existsSync(dir())).toBe(true);
+    expect(readFileSync(outside, "utf8")).toBe(before);
     expect((await fetch(`http://127.0.0.1:${daemon.address().port}/health`)).status).toBe(200);
   });
   it("rejects traversal and malformed accounting before writing", async () => {

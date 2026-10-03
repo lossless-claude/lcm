@@ -95,5 +95,13 @@ function storeResult({ store, cwd, scrubber }: Pick<Admission, "store" | "cwd" |
   else store.writeArm(cut, armRecord(input, input.record, scrubber));
 }
 function requestIdentityHash(input: Record<string, unknown>, cutId: string): string {
-  return objectHash([input.cwd, cutId, input.session_id, input.boundary_uuid, input.model, input.trigger, input.instructions]);
+  return objectHash([input.cwd, cutId, input.session_id, input.boundary_uuid, input.model, input.trigger, input.instructions, engineMessagesHash(input.engine_messages)]);
+}
+function engineMessagesHash(value: unknown): string {
+  if (value === undefined) return objectHash([]);
+  if (!Array.isArray(value)) throw new ShadowStoreError("Invalid engine messages", HTTP.badRequest);
+  return objectHash(value.map(row => {
+    if (!object(row)) throw new ShadowStoreError("Invalid engine message", HTTP.badRequest);
+    return [row.role, row.text, row.handle];
+  }));
 }

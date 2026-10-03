@@ -121,9 +121,11 @@ reserved, and excluded projects are filtered from metadata before corpus reads.
 Present policy exclusion/holdout fields must be lists; null is invalid.
 Optional `--transcripts` points to a JSON list of `{ cwd, sessionId, path }` entries
 for exported native transcripts; otherwise allowed projects' Claude transcript
-directories are discovered. Each transcript must record its own absolute `cwd` in
-leading metadata within the first 4096 bytes; a directory or manifest project label
-does not establish ownership. `--seed` fixes selection, `--limit` defaults to 30 cuts,
+directories are discovered. Ownership metadata is scanned on every row; an omitted
+`cwd` inherits the prior row's. Any excluded cwd removes the whole session,
+including paired shadow evidence. A directory or manifest label cannot establish
+ownership. Malformed exported identifiers, including non-UUID row ids, invalidate
+the source. `--seed` fixes selection, `--limit` defaults to 30 cuts,
 and `--rates` supplies a frozen model/cache rate table. No models are called.
 Reports distinguish missing evidence and unknown cost; continuation judging is a
 phase-2 stub. The output directory must not already exist.

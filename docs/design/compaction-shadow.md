@@ -36,7 +36,8 @@ arm delivery also takes `arm` and `attempt_id`. Usage retains uncached input, ou
 cache-read and cache-creation counters. Missing usage or cost is unknown, never zero.
 Identical retries are accepted; conflicting results or identities are rejected.
 `requestIdentityHash` binds the raw cwd, cut nonce, session, boundary, model,
-trigger and instruction presence/value before redaction. Its SHA-256 digest
+trigger and instruction presence/value, plus a digest of raw engine-message
+roles, text, handles and order before redaction. Its SHA-256 digest
 is stored beside the identifiers and scrubbed instructions. A retry cannot change
 those inputs, even when instructions redact to the same text. Legacy cuts without this digest remain
 readable for evaluation and expiry, but admission retries require a new cut nonce.
@@ -68,7 +69,9 @@ cuts incomplete. Delivery to an expired cut is rejected. A local evaluation expo
 has its own lifetime. Recovery checks every descended directory with `lstat`,
 including project, shadow and cut directories, and skips links. Every recursive
 removal, including staging cleanup, rechecks the directory chain and verifies its
-real path is strictly inside the lcm home's real projects directory.
+real path is strictly inside the lcm home's real projects directory. Recovery
+also checks every file it reads with `lstat`, including project `meta.json` and
+cut manifests, and skips links.
 
 ## Corpus policy
 
@@ -80,12 +83,13 @@ a substring policy before its first capture.
 
 The offline evaluator requires a valid explicit policy; present exclusion and
 holdout fields must be lists, including when empty. Null is invalid. Projects are
-excluded from metadata before loading transcripts or artifacts. Each transcript's
-own leading recorded absolute `cwd` determines ownership, including explicit
-manifest entries. A directory name cannot establish ownership because Claude
-directory names can collide. Transcripts without readable ownership metadata in
-the first 4096 bytes are ineligible. The probe skips leading records without cwd
-without decoding their payloads. Exclusions take precedence over holdout.
+excluded from metadata before loading transcript payloads or artifacts. The
+evaluator scans root metadata on every transcript row, including after the cut,
+without decoding message payloads. A missing `cwd` inherits the previous row's;
+a model-visible row with no established ownership is ineligible. Any recorded
+excluded cwd disqualifies the whole session, including paired shadow cuts. Holdout
+rows also reserve the session. A directory or manifest label cannot establish
+ownership because Claude directory names can collide. Exclusions take precedence over holdout.
 Missing or unresolvable corpus identity is not eligible for evaluation.
 
 ## Phase-1 triage
@@ -103,6 +107,13 @@ compact boundaries and prior summary rows are not probe sources. Unresolvable,
 cyclic or incomplete transcripts are invalid sources. Source UUID/boundary and
 pre-scrub hash/byte count pair hook-observed native text with decoded JSONL text.
 Whitespace is significant; a mismatch disables native comparison for that cut.
+
+Every identifier exported by the harness is validated before measurements and
+probes are written. Session, boundary, summary-message and original-row UUIDs use
+UUID syntax; opaque cut/attempt/supersession identifiers, digest fields, model
+names and source pointers retain their respective shapes. A malformed identifier
+counts as an invalid source and that source is skipped. Identifiers are never
+scrubbed; supersession ids retain their provenance failures when rules match them.
 
 Every probe preserves a verbatim real user message and source address before the
 cut. Exact quote retention is a recall proxy. A versioned lexical classifier
