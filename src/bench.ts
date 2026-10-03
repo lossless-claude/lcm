@@ -769,7 +769,7 @@ async function scoreQuery(query: BenchQuery, ctx: ScoreContext): Promise<QueryOu
     ? await searchHistoryGroup(ctx.unionCwd, { query: searchQuery, limit: ctx.k * SESSION_ROW_BUDGET, terms }, ctx.paths)
     : await rankNativeHistory(ctx.db, { query: searchQuery, limit: ctx.k * SESSION_ROW_BUDGET, terms });
   const promoted = ctx.unionCwd
-    ? searchPromotedGroup(ctx.unionCwd, { query: searchQuery, limit: ctx.k * SESSION_ROW_BUDGET, terms }, ctx.paths).hits
+    ? (await searchPromotedGroup(ctx.unionCwd, { query: searchQuery, limit: ctx.k * SESSION_ROW_BUDGET, terms }, ctx.paths)).hits
     : ctx.promotedStore.search(searchQuery, ctx.k * SESSION_ROW_BUDGET, undefined, ctx.projectId, terms);
   const latencyMs = performance.now() - start;
 

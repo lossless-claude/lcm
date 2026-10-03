@@ -721,6 +721,21 @@ search limits. Message matches name all covering leaf and condensed summaries in
 `summaryIds`, ordered by depth then id; an unsummarized message has an empty list.
 Summary matches carry their own `summaryId`.
 
+### Prompt search
+
+Prompt search reads promoted memory across the cwd's project group and yields
+between members, after releasing each member's connection. Current stores open
+read-only without a migration sweep; an older store is upgraded once before its
+first group read. Empty stores and queries with no hits skip recall feedback.
+Per-member hits retain their existing reciprocal-rank fusion and feedback.
+
+Usage feedback looks up only the requested memory ids through
+`recall_usage_memory_idx`. Migration backfills `recall_usage` once from active
+usage signals with valid tags and a single non-empty target. Promoted-row insert,
+update and delete triggers keep it current, including archive and restore.
+The target tag retains feedback's existing literal matching in stored JSON.
+Surfacing feedback uses the existing index on `recall_surfacing.memory_id`.
+
 ## Expansion system
 
 When summaries are too compressed for a task, agents use `lcm_expand` to recover detail.

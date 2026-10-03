@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { getLcmConnection } from "../db/connection.js";
+import { closeLcmConnection, getLcmConnection } from "../db/connection.js";
 import { runLcmMigrations } from "../db/migration.js";
 
 /**
@@ -25,6 +25,24 @@ export function openMigrated(dbPath: string): DatabaseSync {
     migrated.add(dbPath);
   }
   return db;
+}
+
+/** Current promoted stores need no migration sweep on the prompt read path. */
+export function openPromotedRead(dbPath: string): DatabaseSync {
+  const db = getLcmConnection(dbPath, { readOnly: true });
+  try {
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'recall_usage'").get()) return db;
+  } catch (error) {
+    closeLcmConnection(dbPath, { readOnly: true });
+    throw error;
+  }
+  closeLcmConnection(dbPath, { readOnly: true });
+  try {
+    openMigrated(dbPath);
+  } finally {
+    closeLcmConnection(dbPath);
+  }
+  return getLcmConnection(dbPath, { readOnly: true });
 }
 
 /** Forgets what has been migrated. For tests that rebuild a store in place. */

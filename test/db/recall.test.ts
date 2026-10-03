@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { PromotedStore } from "../../src/db/promoted.js";
@@ -169,6 +169,78 @@ describe("RecallStore.getStats", () => {
 });
 
 describe("RecallStore.getFeedback", () => {
+  it("preserves literal target-tag matching for JSON-escaped historical tags", () => {
+    const db = makeDb();
+    try {
+      const insert = db.prepare("INSERT INTO promoted(id, content, tags, project_id) VALUES (?, 'used', ?, 'p1')");
+      insert.run("literal", '["signal:memory_used","memory_id:target"]');
+      insert.run("escaped", '["signal:memory_used","memory_id:tar\\u0067et"]');
+      const recall = new RecallStore(db);
+      expect(recall.getFeedback(["target"]).get("target")?.usageCount).toBe(1);
+      expect(recall.getStats().topRecalled[0].actCount).toBe(2);
+    } finally { db.close(); }
+  });
+
+  it("keeps usage counts current when signals are retargeted, archived, restored or deleted", () => {
+    const db = makeDb();
+    const promoted = new PromotedStore(db);
+    const recall = new RecallStore(db);
+    try {
+      const signalId = promoted.insert({ content: "used", tags: ["signal:memory_used", "memory_id:first"], projectId: "p1" });
+      const counts = () => [...recall.getFeedback(["first", "second"]).values()].map(entry => entry.usageCount);
+      expect(counts()).toEqual([1, 0]);
+      db.prepare("UPDATE promoted SET tags = ? WHERE id = ?").run('["memory_id:second","signal:memory_used"]', signalId);
+      expect(counts()).toEqual([0, 1]);
+      db.prepare("UPDATE promoted SET archived_at = '2026-01-01' WHERE id = ?").run(signalId);
+      expect(counts()).toEqual([0, 0]);
+      db.prepare("UPDATE promoted SET archived_at = NULL WHERE id = ?").run(signalId);
+      expect(counts()).toEqual([0, 1]);
+      db.prepare("DELETE FROM promoted WHERE id = ?").run(signalId);
+      expect(counts()).toEqual([0, 0]);
+    } finally { db.close(); }
+  });
+
+  it("ignores malformed tag shapes, duplicate targets and archived usage signals", () => {
+    const db = makeDb();
+    try {
+      const insert = db.prepare("INSERT INTO promoted(id, content, tags, project_id, archived_at) VALUES (?, 'signal', ?, 'p1', ?)");
+      const invalidTags = [
+        'not json', '{"signal:memory_used":"memory_id:target"}',
+        '["signal:memory_used","memory_id:target",7]',
+        '["signal:memory_used","memory_id:target","memory_id:target"]',
+        '["signal:memory_used","memory_id:target","memory_id:"]',
+        '["signal:memory_used","memory_id:"]',
+      ];
+      invalidTags.forEach((tags, index) => insert.run(`invalid-${index}`, tags, null));
+      insert.run("archived", '["signal:memory_used","memory_id:target"]', "2026-01-01");
+      insert.run("active", '["signal:memory_used","memory_id:target"]', null);
+      expect(new RecallStore(db).getFeedback(["target"]).get("target")?.usageCount).toBe(1);
+    } finally { db.close(); }
+  });
+
+  it("looks up requested usage targets through an index without scanning promoted rows", () => {
+    const db = makeDb();
+    const promoted = new PromotedStore(db);
+    for (let row = 0; row < 100; row++) promoted.insert({ content: "unrelated signal", tags: ["signal:memory_used", `memory_id:other-${row}`], projectId: "p1" });
+    promoted.insert({ content: "used target", tags: ["signal:memory_used", "memory_id:target"], projectId: "p1" });
+    const prepare = db.prepare.bind(db);
+    const plans: string[] = [];
+    const query = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+      const stmt = prepare(sql);
+      const all = stmt.all.bind(stmt);
+      vi.spyOn(stmt, "all").mockImplementation((...args) => {
+        plans.push(...(prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args) as Array<{ detail: string }>).map(row => row.detail));
+        return all(...args);
+      });
+      return stmt;
+    });
+    try {
+      expect(new RecallStore(db).getFeedback(["target", "missing"]).get("target")?.usageCount).toBe(1);
+      expect(plans.some(plan => /SCAN promoted\b/.test(plan))).toBe(false);
+      expect(plans.filter(plan => /SEARCH.*INDEX.*memory_id=/.test(plan)).length).toBe(2);
+    } finally { query.mockRestore(); db.close(); }
+  });
+
   it("aggregates usage counts and surfacing metadata for requested memories", () => {
     const db = makeDb();
     const promoted = new PromotedStore(db);
