@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { LcmPaths } from "../lcm-paths.js";
 import { projectMetaPath } from "./project.js";
@@ -68,6 +68,19 @@ export const readProjectMeta = (cwd: string, paths: LcmPaths): ProjectMeta | nul
 /** The record in a project directory (for callers enumerating `projects/*`). */
 export const readProjectMetaIn = (projectDir: string): ProjectMeta | null =>
   readMetaFile(projectMetaPathIn(projectDir));
+
+/** Recovery reads regular metadata files only, without following a file link. */
+export function readProjectMetaInNoLinks(projectDir: string): ProjectMeta | null {
+  const path = projectMetaPathIn(projectDir);
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) return null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  return readMetaFile(path);
+}
 
 /** Merges `patch` into `cwd`'s record; `cwd` itself is always re-asserted. */
 export const updateProjectMeta = (cwd: string, paths: LcmPaths, patch: ProjectMeta): ProjectMeta =>

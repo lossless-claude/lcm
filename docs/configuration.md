@@ -90,6 +90,55 @@ Use it to run lcm against a scratch directory without touching your own memory â
 
 Both the daemon and the client must see the same value: a daemon started without it answers on the port from `~/.lossless-claude/config.json` and writes to the real databases.
 
+### Compaction shadow artifacts
+
+The daemon exposes authenticated compaction shadow artifact routes, but no live
+shadow hook or model executor is enabled. Native compaction and restore keep their
+existing behavior. Artifacts live in each project's `compaction-shadow/` directory
+under the lcm home, use Capture's scrubbing rules, and expire after 30 days.
+Recovery skips linked project/shadow/cut directories and checks real-path
+containment before recursive cleanup. Correlation identifiers are validated and
+preserved exactly; sensitive identifiers are rejected. Admission retries compare
+a digest of raw identity fields, so redaction cannot hide a changed request.
+Native tails must match frozen engine handles in order, with the same role and
+current-rule scrubbed text; conflicting deliveries return HTTP 409.
+
+`bench-corpora.json` is optional for shadow admission: a valid existing exclusion
+skips a project's cuts before Capture with HTTP 200 and
+`{ admitted: false, reason: "excluded" }`. A missing policy leaves admission
+available; an unreadable or invalid policy refuses admission with HTTP 200 and
+`{ admitted: false, reason: "policy-unavailable" }` and logs a warning.
+Corpus discovery skips non-directory project entries and unreadable metadata.
+Offline evaluation requires a valid explicit policy and applies its
+exclusions before loading corpus content. See
+[compaction shadow artifacts](design/compaction-shadow.md) for wire fields,
+accounting, retention and privacy.
+
+The repository's read-only phase-1 evaluator requires a built checkout and an
+explicit local output directory:
+
+```bash
+LCM_SKIP_CACHE_SYNC=1 npm run build
+node --experimental-strip-types scripts/eval-compaction-shadow.mts --home /path/to/lcm-home --output /path/to/new-report
+```
+
+The selected home must contain a valid `bench-corpora.json`. Held-out projects are
+reserved, and excluded projects are filtered from metadata before corpus reads.
+Present policy exclusion/holdout fields must be lists; null is invalid.
+Optional `--transcripts` points to a JSON list of `{ cwd, sessionId, path }` entries
+for exported native transcripts; otherwise allowed projects' Claude transcript
+directories are discovered. Ownership metadata is scanned on every row; an omitted
+`cwd` inherits the prior row's. Any excluded cwd removes the whole session,
+including paired shadow evidence. A directory or manifest label cannot establish
+ownership. Every recorded session id is validated against the supplied label
+before acting on exclusion; mismatches invalidate the source, and exclusions
+block its recorded session ids. Stored tails that conflict with the frozen
+messages also invalidate a cut. Malformed exported identifiers, including non-UUID row ids, invalidate
+the source. `--seed` fixes selection, `--limit` defaults to 30 cuts,
+and `--rates` supplies a frozen model/cache rate table. No models are called.
+Reports distinguish missing evidence and unknown cost; continuation judging is a
+phase-2 stub. The output directory must not already exist.
+
 ### Project store hygiene
 
 `lcm doctor` counts project directories without a `meta.json` file and directories

@@ -17,6 +17,7 @@ import { projectMetaPathIn, readProjectMetaIn, type ProjectMeta } from "./projec
 import { sanitizeError } from "./safe-error.js";
 import { readAuthToken } from "./auth.js";
 import type { ProxyManager } from "./proxy-manager.js";
+import { createCompactionShadowHandlers } from "./routes/compaction-shadow.js";
 import { createCompactHandler } from "./routes/compact.js";
 import { createPromoteHandler } from "./routes/promote.js";
 import { createRestoreHandler } from "./routes/restore.js";
@@ -201,6 +202,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   const answerSummarizeJob = createAnswerSummarizeJobHandler(summarizeJobs, paths);
   routes.set("GET /summarize-jobs/next", createNextSummarizeJobHandler(summarizeJobs, paths));
   routes.set("POST /summarize-jobs/pool", createPoolSummarizeJobHandler(summarizeJobs));
+  const shadow = createCompactionShadowHandlers(config, paths, log);
+  for (const kind of ["start", "native", "arm"] as const) routes.set(`POST /compaction-shadow/${kind}`, shadow[kind]);
   routes.set("POST /compact", createCompactHandler(config, paths, summarizeJobs, log));
   routes.set("POST /replay-reset", createReplayResetHandler(paths));
   const timelineHandler = createTimelineHandler(config, paths, summarizeJobs);
