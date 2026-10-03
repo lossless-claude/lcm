@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,15 @@ import { ensureAuthToken, readAuthToken } from "../../src/daemon/auth.js";
 import { DatabaseSync } from "node:sqlite";
 import { SummaryStore } from "../../src/store/summary-store.js";
 import { workingHeader } from "../compaction-header/fixtures.js";
+
+const preparationFault = vi.hoisted(() => ({ enabled: false }));
+vi.mock("node:fs", async original => {
+  const fs = await original<typeof import("node:fs")>();
+  return { ...fs, readFileSync: (...args: Parameters<typeof fs.readFileSync>) => {
+    if (preparationFault.enabled && String(args[0]).endsWith("/compaction-header.yaml")) throw new Error("header prompt unavailable");
+    return fs.readFileSync(...args);
+  } };
+});
 
 let root: string, cwd: string, paths: LcmPaths, daemon: DaemonInstance, token: string, transcript: string, databaseFile: string;
 const fileForProject = projectDbPath;
@@ -61,6 +70,15 @@ async function withSummaryStore(operation: (store: SummaryStore) => Promise<void
   finally { db.close(); }
 }
 describe("daemon compaction shadow artifacts", () => {
+  it("creates no cut when header prompt preparation throws", async () => {
+    preparationFault.enabled = true;
+    try {
+      const result = await post("start", { ...startInput(), prepare_header: true });
+      expect(result.status).toBe(422); expect(existsSync(dir())).toBe(false);
+    } finally { preparationFault.enabled = false; }
+    const retried = await post("start", { ...startInput(), prepare_header: true });
+    expect(retried.status).toBe(200); expect(retried.body.job.forkPrompt).toContain("instructionsInForce");
+  });
   it("prepares fork and paired completion jobs from the same immutable cut on request", async () => {
     const admitted = await post("start", { ...startInput(), prepare_header: true });
     expect(admitted.status).toBe(200); expect(admitted.body.job.forkPrompt).toContain("instructionsInForce");
@@ -440,6 +458,14 @@ describe("daemon compaction shadow artifacts", () => {
     request.record = { ...request.record, shadowAdmission: "cancelled", usage, tokensBefore: 8905, tokensAfter: 222 };
     expect((await post("native", request)).status).toBe(200);
     expect(artifact("native.json")).toMatchObject({ shadowAdmission: "cancelled", outcome: "answered", usage, tokensBefore: 8905, tokensAfter: 222 });
+  });
+  it("persists validated unknown-usage flags and shadow refusal reasons", async () => {
+    const cut = await start();
+    expect((await post("arm", { ...arm(cut), record: { ...arm(cut).record, usage: null, usageUnknown: true } })).status).toBe(200);
+    expect(artifact("arm-A-first.json")).toMatchObject({ usage: null, usageUnknown: true });
+    expect((await post("arm", { ...arm(cut, "B"), record: { ...arm(cut, "B").record, outcome: "spend-cap", refusalReason: "usageUnknown" } })).status).toBe(200);
+    expect(artifact("arm-B-first.json")).toMatchObject({ refusalReason: "usageUnknown" });
+    expect((await post("arm", { ...arm(cut, "C"), record: { ...arm(cut, "C").record, refusalReason: "PRIVATE_WORD" } })).status).toBe(400);
   });
   it("requires daemon authentication", async () => {
     expect((await post("start", startInput(), false)).status).toBe(401);

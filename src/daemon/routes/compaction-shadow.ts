@@ -44,8 +44,7 @@ export function createCompactionShadowHandlers(config: DaemonConfig, paths: LcmP
         sendJson(res, HTTP.ok, { stored: true, ...(input.prepare_header === true ? { job } : {}) }); return;
       }
       const admitted = await admitCut({ paths, store, cwd, scrubber }, input);
-      const job = input.prepare_header === true ? cutHeaderJob(admitted, [], scrubber) : undefined;
-      sendJson(res, HTTP.ok, { ...admitted, ...(job ? { job } : {}) });
+      sendJson(res, HTTP.ok, admitted);
     } catch (error) {
       const status = error instanceof ShadowStoreError ? error.status : error instanceof SyntaxError ? HTTP.badRequest : HTTP.unprocessable;
       sendJson(res, status, { error: error instanceof ShadowStoreError ? error.message : "Shadow request could not be verified" });
@@ -68,7 +67,7 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
   if (prior) {
     if (prior.cut.requestIdentityHash !== requestHash)
       throw new ShadowStoreError("Cut request conflicts with its identity");
-    return { admitted: true, ...prior };
+    return preparedAdmission(prior, input, scrubber);
   }
   const { snapshot, conversationId } = await captureShadowSnapshot(paths, scrubber, { cwd, sessionId: input.session_id as string, boundaryUuid: input.boundary_uuid as string, transcriptPath: input.transcript_path as string | undefined });
   snapshot.engineMessages = engineMessages;
@@ -80,9 +79,14 @@ async function admitCut({ paths, store, cwd, scrubber }: Admission, input: Recor
   if (concurrent) {
     const same = concurrent.cut.snapshotHash === cut.snapshotHash && concurrent.cut.requestIdentityHash === requestHash;
     if (!same) throw new ShadowStoreError("Concurrent cut request conflicts with its identity");
-    return { admitted: true, ...concurrent };
+    return preparedAdmission(concurrent, input, scrubber);
   }
-  store.create(cut, snapshot); return { admitted: true, cut, snapshot };
+  const admitted = preparedAdmission({ cut, snapshot }, input, scrubber);
+  store.create(cut, snapshot); return admitted;
+}
+function preparedAdmission(context: { cut: ShadowManifest; snapshot: ShadowSnapshot }, input: Record<string, unknown>, scrubber: ScrubEngine) {
+  const job = input.prepare_header === true ? cutHeaderJob(context, [], scrubber) : undefined;
+  return { admitted: true, ...context, ...(job ? { job } : {}) };
 }
 function validateSnapshotInput(input: Record<string, unknown>): void {
   if (!safeId(input.boundary_uuid)) throw new ShadowStoreError("Invalid source boundary", HTTP.badRequest);

@@ -15,7 +15,11 @@ references. Human messages are never removed from excerpts by a classifier.
 
 Plugin `userConfig.compactionShadow` defaults to `false`. While off, there are no
 shadow requests or model calls. While enabled, it incurs substantial extra model
-spending and shares the existing `sessionSummarizerMaxOutputTokens` cap. Leaf and
+spending and uses a separate shadow account under the existing
+`sessionSummarizerMaxOutputTokens` limit. Ordinary summaries retain their full
+allowance regardless of shadow spending/reservations. Unknown shadow usage is
+recorded as `usageUnknown` and refuses later shadow arms with that reason, without
+pushing ordinary jobs onto their cap or fallback provider. Leaf and
 condensed summaries remain on the configured pipeline.
 
 Only real main-session manual, auto and plugin cuts are admitted. Precompute,
@@ -58,7 +62,9 @@ whitespace, and its pre-scrub hash/length support exact historical JSONL parity.
 A live paired cut must verify text equality before cross-source evaluation is trusted.
 
 `prepare_header: true` on admission requests the daemon's C3 fork prompt/evidence;
-on verified native delivery it requests the common complete prompt/evidence. Both
+on verified native delivery it requests the common complete prompt/evidence.
+Admission prepares its header job before creating the cut; a preparation failure
+creates no manifest or snapshot in the shadow namespace. Both
 use the frozen window and current scrubbing rules. A receives extraction rules and
 excerpts; B/C receive identical window/tail input and equal output allowances. All
 three documents use excerpts, working-state header, yielding window, engine tail.

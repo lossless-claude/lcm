@@ -1,5 +1,5 @@
 import type { EngineInterface } from "claude-code";
-import type { SessionOutputBudget } from "./model-budget.js";
+import type { BudgetLease, SessionOutputBudget } from "./model-budget.js";
 import { validCompactionHeader, validModelName, type CompactionHeader } from "./compaction-header-schema.js";
 import { freezeCitationEvidence, resolveHeaderCitations, type CitationEvidence, type HeaderCitations } from "./header-citations.js";
 
@@ -14,7 +14,7 @@ type OutcomeMetadata = {
   arm: Arm; requestedModel: string; usage: HeaderUsage | null; inputHash: string | null; promptHash: string | null;
   durationMs: number; queueMs: number; options?: { maxTokens: number }; status?: number | null; errorKind?: string;
   budget?: ReturnType<SessionOutputBudget["snapshot"]>;
-  citations?: HeaderCitations;
+  citations?: HeaderCitations; usageUnknown?: boolean; refusalReason?: "usageUnknown" | "spendCap";
 };
 export type HeaderOutcome = OutcomeMetadata & ({ outcome: "answered"; text: string; header: CompactionHeader } | { outcome: HeaderFailure; text: string; header: null });
 type ExecutionContext = { model: SessionModelAtCut; budget: SessionOutputBudget; canStart?: () => boolean };
@@ -57,6 +57,10 @@ function answered(call: CallContext, text: string, usage: HeaderUsage): HeaderOu
   return { ...metadata(call, usage), outcome: "answered", text, header, citations: resolveHeaderCitations(header, call.job?.evidence) };
 }
 function classifyResult(result: unknown, call: CallContext): HeaderOutcome {
+  const outcome = observedResult(result, call);
+  return { ...outcome, usageUnknown: outcome.usage === null && outcome.outcome !== "nothing-to-fork" };
+}
+function observedResult(result: unknown, call: CallContext): HeaderOutcome {
   if (!object(result)) return failure(call, "unconfirmed");
   if (nothingToFork(result, call.arm)) return failure(call, "nothing-to-fork");
   const usage = readUsage(result.usage);
@@ -82,13 +86,17 @@ function outputAccounting(results: readonly HeaderOutcome[]): { known: number; u
 export async function executeHeaderFork($: HeaderEngine, job: HeaderCall, { model, budget }: ExecutionContext): Promise<HeaderOutcome> {
   const now = Date.now(), fixed = { ...job, evidence: freezeCitationEvidence(job.evidence) }, call: CallContext = { arm: "A", model: model.id, job: fixed, queuedAt: now, startedAt: now };
   const lease = budget.reserveFork();
-  if (!lease) return { ...failure(call, budget.snapshot().available ? "unavailable" : "spend-cap"), budget: budget.snapshot() };
+  if (!lease) return { ...failure(call, budget.snapshot().available && !budget.snapshot().usageUnknown ? "unavailable" : "spend-cap"), ...refusal(budget), budget: budget.snapshot() };
   let result: unknown;
   try { result = await $.model.fork({ prompt: fixed.prompt }); }
   catch { result = null; }
   const outcome = classifyResult(result, call), accounted = outputAccounting([outcome]);
   lease.settle(accounted.known, accounted.unknown);
   return { ...outcome, budget: budget.snapshot() };
+}
+function refusal(budget: SessionOutputBudget): Pick<OutcomeMetadata, "refusalReason"> {
+  if (budget.snapshot().usageUnknown) return { refusalReason: "usageUnknown" };
+  return budget.snapshot().available ? {} : { refusalReason: "spendCap" };
 }
 async function completeMember($: HeaderEngine, call: CallContext): Promise<HeaderOutcome> {
   let result: unknown;
@@ -108,12 +116,22 @@ export async function executeHeaderPair($: HeaderEngine, ready: Promise<HeaderCa
   const requested = job.maxTokens ?? DEFAULT_HEADER_MAX_TOKENS;
   if (!Number.isSafeInteger(requested) || requested <= 0 || requested > MAX_COMPLETION_TOKENS) return unavailablePair(model, queuedAt, { job });
   if (canStart?.() === false) return unavailablePair(model, queuedAt, { job, outcome: "aborted" });
-  const lease = await budget.reserveComplete(requested, CLEAN_HEADER_ARMS);
-  if (canStart?.() === false) { lease?.settle(0); return unavailablePair(model, queuedAt, { job, outcome: "aborted" }); }
-  if (!lease) return unavailablePair(model, queuedAt, { job, outcome: "spend-cap" });
+  const reservation = await reserveHeaderPair({ budget, canStart }, requested);
+  if (typeof reservation === "string") return refusedPair({ model, queuedAt, job, outcome: reservation }, budget);
+  const lease = reservation;
   const common = { job, queuedAt, startedAt: Date.now(), maxTokens: lease.maxTokens! };
   const [B, C] = await Promise.all([completeMember($, { ...common, arm: "B", model: model.id }), completeMember($, { ...common, arm: "C", model: "sonnet" })]);
   const accounted = outputAccounting([B, C]); lease.settle(accounted.known, accounted.unknown);
   return { B: { ...B, budget: budget.snapshot() }, C: { ...C, budget: budget.snapshot() } };
+}
+async function reserveHeaderPair({ budget, canStart }: Pick<ExecutionContext, "budget" | "canStart">, requested: number): Promise<BudgetLease | "aborted" | "spend-cap"> {
+  const lease = await budget.reserveComplete(requested, CLEAN_HEADER_ARMS);
+  if (canStart?.() === false) { lease?.settle(0); return "aborted"; }
+  return lease ?? "spend-cap";
+}
+function refusedPair(input: { model: SessionModelAtCut; queuedAt: number; job: HeaderCall; outcome: "aborted" | "spend-cap" }, budget: SessionOutputBudget) {
+  const pair = unavailablePair(input.model, input.queuedAt, { job: input.job, outcome: input.outcome });
+  if (input.outcome === "aborted") return pair;
+  return { B: { ...pair.B, ...refusal(budget), budget: budget.snapshot() }, C: { ...pair.C, ...refusal(budget), budget: budget.snapshot() } };
 }
 export const headerExecutor: HeaderExecutor = { captureModel: captureHeaderModel, fork: executeHeaderFork, pair: executeHeaderPair };

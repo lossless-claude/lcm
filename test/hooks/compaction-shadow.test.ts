@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { workingHeader } from "../compaction-header/fixtures.js";
 
+const fallbackRequest = vi.hoisted(() => vi.fn(async () => ({
+  content: [{ type: "text", text: "paid fallback summary" }], usage: { input_tokens: 1, output_tokens: 1 }, stop_reason: "end_turn",
+})));
+vi.mock("@anthropic-ai/sdk", () => ({ default: class { messages = { create: fallbackRequest }; } }));
+
 const SESSION_OUTPUT_CAP = 100;
 const usage = { input_tokens: 10, output_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 7 };
 const messages = [{ role: "user", text: "Keep working.", handle: "h1", toolUses: [] }, { role: "assistant", text: "In progress", handle: "h2", toolUses: [] }];
@@ -140,8 +145,8 @@ describe("opt-in compaction shadow hook", () => {
   });
   it("records cap refusal for each arm without making a model call", async () => {
     const harness = await setup(); await harness.append();
-    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
-    (await sharedSessionOutputBudget("session-a", SESSION_OUTPUT_CAP).reserveComplete(SESSION_OUTPUT_CAP))!.settle(SESSION_OUTPUT_CAP);
+    const { shadowSessionOutputBudget } = await import("../../hooks/shadow-budget.js");
+    (await shadowSessionOutputBudget("session-a", SESSION_OUTPUT_CAP).reserveComplete(SESSION_OUTPUT_CAP))!.settle(SESSION_OUTPUT_CAP);
     await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
     expect(harness.posts.filter(post => post.route.endsWith("/arm")).every(post => post.body.record.outcome === "spend-cap")).toBe(true);
@@ -204,7 +209,7 @@ describe("opt-in compaction shadow hook", () => {
   });
   it("keeps native successful when the executor cannot acquire its session budget", async () => {
     const harness = await setup(); await harness.append(); const result = nativeResult(), next = vi.fn(async () => result);
-    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js"); sharedSessionOutputBudget("session-a", 99);
+    const { shadowSessionOutputBudget } = await import("../../hooks/shadow-budget.js"); shadowSessionOutputBudget("session-a", 99);
     expect(await harness.fire("session.compact", compact(), next)).toBe(result); expect(next).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
     expect(harness.engine.model.fork).not.toHaveBeenCalled(); expect(harness.engine.model.complete).not.toHaveBeenCalled();
@@ -216,9 +221,9 @@ describe("opt-in compaction shadow hook", () => {
     await harness.fire("session.end", { sessionId: "session-a", reason: "other" });
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(2));
     fork.resolve({ isAnswered: true, text: JSON.stringify(workingHeader()), usage });
-    const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
+    const { shadowSessionOutputBudget } = await import("../../hooks/shadow-budget.js");
     await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
-    expect(sharedSessionOutputBudget("session-a", SESSION_OUTPUT_CAP).snapshot()).toMatchObject({ spent: usage.output_tokens, usageUnknown: false, reserved: 0 });
+    expect(shadowSessionOutputBudget("session-a", SESSION_OUTPUT_CAP).snapshot()).toMatchObject({ spent: usage.output_tokens, usageUnknown: false, reserved: 0 });
     expect(harness.engine.model.complete).not.toHaveBeenCalled();
   });
   it("does no admission or model work for an already aborted dispatch", async () => {
@@ -430,6 +435,76 @@ describe("opt-in compaction shadow hook", () => {
     expect(harness.engine.model.fork).not.toHaveBeenCalled(); expect(harness.engine.model.complete).not.toHaveBeenCalled();
     expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toEqual([]);
     expect(harness.posts.find(post => post.route.endsWith("/native"))!.body.record.shadowAdmission).toBe("cancelled");
+  });
+  it("keeps ordinary summaries on their configured session provider after unreported shadow fork usage", async () => {
+    const harness = await setup(); await harness.append(); fallbackRequest.mockClear();
+    harness.engine.process.run.mockResolvedValue({ stdout: 'secret\n__CONFIG__\n{"llm":{"provider":"session","fallbackProvider":"anthropic"}}\n__TMPDIR__/tmp', exitCode: 0 });
+    harness.engine.model.fork.mockRejectedValue(new Error("unreported shadow failure"));
+    const { SummarizeJobStore } = await import("../../src/daemon/summarize-jobs.js");
+    const { createSummarizer } = await import("../../src/daemon/summarizer.js");
+    const { loadDaemonConfig } = await import("../../src/daemon/config.js");
+    const jobs = new SummarizeJobStore(), config = loadDaemonConfig("/missing", { llm: { provider: "session", fallbackProvider: "anthropic", apiKey: "test-only", model: "fallback-model" }, summarizer: { language: "en" } }, {});
+    const summarizer = (await createSummarizer("session", config, jobs))!;
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    let polled = false;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => {
+      if (url.includes("/summarize-jobs/next")) {
+        if (polled) return new Promise<any>(() => {});
+        polled = true;
+        return { ok: true, status: 200, text: JSON.stringify({ job: await jobs.next("session-a", undefined, false) }) };
+      }
+      const response = await fetch(url, init);
+      if (url.includes("/summarize-jobs/") && init?.method === "POST") jobs.answer(new URL(url).pathname.split("/").at(-1)!, JSON.parse(init.body));
+      return response;
+    });
+    harness.engine.model.complete.mockImplementation(async () => ({ isAnswered: true, text: "ordinary summary", usage }));
+    try {
+      await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+      await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+      const reported: string[] = [], ordinary = summarizer("ordinary request", false, { sessionId: "session-a", targetTokens: 10, onUsage: row => reported.push(row.provider) });
+      await harness.fire("session.start", {});
+      expect(await ordinary).toBe("ordinary summary"); expect(reported).toEqual(["session:haiku"]); expect(fallbackRequest).not.toHaveBeenCalled();
+      expect(harness.engine.model.complete).toHaveBeenCalledWith(expect.objectContaining({ model: "haiku", maxTokens: SESSION_OUTPUT_CAP }));
+    } finally { jobs.close(); }
+  });
+  it("records unknown shadow usage and refuses all later arms in that session with a reason", async () => {
+    const harness = await setup(); await harness.append(); harness.engine.model.fork.mockRejectedValue(new Error("unreported"));
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    expect(harness.posts.find(post => post.body.arm === "A")!.body.record).toMatchObject({ usageUnknown: true });
+    await harness.append("next-cut"); await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(6));
+    const secondCut = harness.posts.filter(post => post.route.endsWith("/start"))[1].body.cut_id;
+    for (const post of harness.posts.filter(post => post.route.endsWith("/arm") && post.body.cut_id === secondCut))
+      expect(post.body.record).toMatchObject({ outcome: "spend-cap", refusalReason: "usageUnknown" });
+    expect(harness.engine.model.fork).toHaveBeenCalledTimes(1); expect(harness.engine.model.complete).not.toHaveBeenCalled();
+  });
+  it("cancels an old session's pending cut when clear changes the current session id", async () => {
+    const harness = await setup(), gate = Promise.withResolvers<void>(); await harness.append();
+    const fetch = harness.engine.http.fetch.getMockImplementation()!;
+    harness.engine.http.fetch.mockImplementation(async (url, init) => {
+      const response = await fetch(url, init); if (url.endsWith("/start")) await gate.promise; return response;
+    });
+    const result = nativeResult(), next = vi.fn(async () => result), pending = harness.fire("session.compact", compact(), next);
+    await vi.waitFor(() => expect(harness.posts.some(post => post.route.endsWith("/start"))).toBe(true));
+    harness.engine.session.id.mockResolvedValue("session-b");
+    await harness.fire("session.end", { sessionId: "session-a", reason: "clear" });
+    await harness.fire("classic.SessionStart", { session_id: "session-b", source: "clear" }); gate.resolve();
+    expect(await pending).toBe(result); expect(next).toHaveBeenCalledTimes(1);
+    expect(harness.engine.model.fork).not.toHaveBeenCalled(); expect(harness.engine.model.complete).not.toHaveBeenCalled();
+    expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toEqual([]);
+    expect(harness.posts.find(post => post.route.endsWith("/native"))!.body).toMatchObject({ session_id: "session-a", record: { shadowAdmission: "cancelled" } });
+  });
+  it("refuses shadow work after a bounded unknown completion even when nominal allowance remains", async () => {
+    const harness = await setup(); await harness.append(); harness.engine.model.complete.mockRejectedValueOnce(new Error("unreported B"));
+    await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(3));
+    expect(harness.posts.find(post => post.body.arm === "B")!.body.record).toMatchObject({ usageUnknown: true, budget: { available: 1 } });
+    await harness.append("later"); await harness.fire("session.compact", compact(), vi.fn(async () => nativeResult()));
+    await vi.waitFor(() => expect(harness.posts.filter(post => post.route.endsWith("/arm"))).toHaveLength(6));
+    const lastCut = harness.posts.filter(post => post.route.endsWith("/start")).at(-1)!.body.cut_id;
+    expect(harness.posts.filter(post => post.route.endsWith("/arm") && post.body.cut_id === lastCut).every(post => post.body.record.refusalReason === "usageUnknown")).toBe(true);
+    expect(harness.engine.model.fork).toHaveBeenCalledTimes(1); expect(harness.engine.model.complete).toHaveBeenCalledTimes(2);
   });
   it("uses only stored boundaries while an append is pending and preserves its returned object", async () => {
     const harness = await setup(), stored = Promise.withResolvers<any>(); await harness.append("last-stored");

@@ -1,6 +1,6 @@
 import type { EngineInterface, SessionCompactInput, SessionCompactResult, SessionMessage } from "claude-code";
 import { captureHeaderModel, executeHeaderFork, executeHeaderPair, type HeaderCall, type HeaderOutcome, type SessionModelAtCut } from "./compaction-header.js";
-import { sharedSessionOutputBudget } from "./model-budget.js";
+import { shadowSessionOutputBudget } from "./shadow-budget.js";
 import { ShadowDeadline, ShadowInterrupted } from "./shadow-deadline.js";
 import { ShadowBoundaries, type ShadowAppend } from "./shadow-boundaries.js";
 
@@ -132,7 +132,7 @@ function deliverUnstarted({ cut, state, outcome }: { cut: Cut; state: ShadowSess
   }).finally(() => state.remove(cut)), transport);
 }
 function startArms(engine: ShadowEngine, { cut, state, cap }: { cut: Cut; state: ShadowSessionState; cap: number }, transport: ShadowTransport): void {
-  const budget = sharedSessionOutputBudget(cut.sessionId, cap);
+  const budget = shadowSessionOutputBudget(cut.sessionId, cap);
   const fork = cut.fork ? executeHeaderFork(engine, cut.fork, { model: cut.model, budget }).catch(() => unavailableArm(cut, "A")) : Promise.resolve(unavailableArm(cut, "A"));
   const forkDelivery = deliverFork(fork, cut, transport);
   state.own(forkDelivery, transport);

@@ -100,10 +100,22 @@ export function armRecord(input: Record<string, unknown>, record: Record<string,
   const attempts = usageAttempts(record.usageAttempts);
   const options = completionOptions(record.options);
   const classification = failureClassification(record, scrubber);
-  return { ...basicRecord(record, scrubber), ...hookTimings(record.timings), ...armAccounting(record), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
+  return { ...basicRecord(record, scrubber), ...hookTimings(record.timings), ...armAccounting(record), ...armRefusal(record), arm: input.arm as ArmRecord["arm"], attemptId: input.attempt_id as string,
     requestedModel: record.requestedModel as string, inputHash: record.inputHash as string | null, promptHash: record.promptHash as string | null, header: header(record.header, scrubber),
     usageAttempts: attempts, ...classification, ...(options ? { options } : {}),
   };
+}
+function armRefusal(record: Record<string, unknown>): Pick<ArmRecord, "usageUnknown" | "refusalReason"> {
+  const result: Pick<ArmRecord, "usageUnknown" | "refusalReason"> = {};
+  if (record.usageUnknown !== undefined) {
+    if (typeof record.usageUnknown !== "boolean") throw new ShadowStoreError("Invalid shadow usage state", HTTP.badRequest);
+    result.usageUnknown = record.usageUnknown;
+  }
+  if (record.refusalReason !== undefined) {
+    if (record.refusalReason !== "usageUnknown" && record.refusalReason !== "spendCap") throw new ShadowStoreError("Invalid shadow refusal", HTTP.badRequest);
+    result.refusalReason = record.refusalReason;
+  }
+  return result;
 }
 function armAccounting(record: Record<string, unknown>): Pick<ArmRecord, "queueMs" | "budget"> {
   const result: Pick<ArmRecord, "queueMs" | "budget"> = {};

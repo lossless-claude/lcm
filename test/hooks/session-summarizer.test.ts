@@ -72,17 +72,17 @@ describe("function-hook session summarizer", () => {
     expect(harness.engine.model.complete).toHaveBeenCalled();
   });
 
-  it("charges an unreported failed completion at its full reservation alongside a concurrent header lease", async () => {
+  it("charges an unreported failed completion at its full reservation alongside a concurrent ordinary lease", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 12 }, [{ ...leaf, maxTokens: 4 }]);
     const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
     const budget = sharedSessionOutputBudget(sessionId, 12);
-    let headerLease: Awaited<ReturnType<typeof budget.reserveComplete>>;
+    let concurrentLease: Awaited<ReturnType<typeof budget.reserveComplete>>;
     harness.engine.model.complete.mockImplementation(async () => {
-      headerLease = await budget.reserveComplete(3); throw new Error("connection dropped");
+      concurrentLease = await budget.reserveComplete(3); throw new Error("connection dropped");
     });
     await harness.trigger(); await harness.done;
     expect(budget.snapshot()).toMatchObject({ spent: 4, reserved: 3, available: 5, usageUnknown: true });
-    headerLease!.settle(1);
+    concurrentLease!.settle(1);
     expect((await budget.reserveComplete(100))!.maxTokens).toBe(7);
   });
   it("does not mistake known prior fork usage for the usage of a failed fallback", async () => {
@@ -95,7 +95,7 @@ describe("function-hook session summarizer", () => {
     expect(budget.snapshot()).toMatchObject({ spent: 12, available: 0, usageUnknown: true });
   });
 
-  it("uses a stable module owner even when the header and poller receive different dispatch facades", async () => {
+  it("uses a stable module owner even across different ordinary dispatch facades", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 5 });
     const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
     const budget = sharedSessionOutputBudget(sessionId, 5);
@@ -106,7 +106,7 @@ describe("function-hook session summarizer", () => {
     expect(budget.snapshot().spent).toBe(5);
   });
 
-  it("shares the session output budget with header work instead of resetting it at poller start", async () => {
+  it("preserves ordinary session spending instead of resetting it at poller start", async () => {
     const harness = await start({ sessionSummarizerMaxOutputTokens: 5 });
     const { sharedSessionOutputBudget } = await import("../../hooks/model-budget.js");
     const budget = sharedSessionOutputBudget(sessionId, 5);

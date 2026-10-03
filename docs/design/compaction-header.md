@@ -91,7 +91,7 @@ outcomes remain `answered` even when citations fail. Future installation uses th
 `allCitationsResolved` predicate to refuse any missing or ambiguous citation;
 absent resolution data also refuses.
 
-## Arms and shared budget
+## Arms and output accounts
 
 `captureHeaderModel` reads `$.session.model()` once at the cut and freezes its
 exact identifier. A uses `$.model.fork` over the session prefix, with extraction
@@ -100,23 +100,27 @@ same frozen prompt, hashes and output allowance: B uses the captured model;
 C uses `sonnet`. Fork invocation precedes its first await; pair work can await
 immutable remainder readiness independently of the caller.
 
-All module work shares `sessionSummarizerMaxOutputTokens` through a stable module
-owner keyed by session id, independent of dispatch facade identity. Spending
-survives poller restarts. B/C reserve equal bounded allowances atomically;
-The registration cap is normalized once: finite values are floored and clamped
-to the nonnegative safe-integer range; invalid values retain the default.
-ordinary jobs wait for pending reservations. An uncapped fork starts immediately
-or records unavailable/refused and blocks later admission until settled. Its
-overshoot is recorded; strict aggregate enforcement is impossible for fork.
-Spending, including failed/invalid output, is charged before delivery. Known
-unused allowance is released. Unknown usage consumes the full lease reservation
-and sets `usageUnknown`; it never releases that allowance as zero spending.
-Other concurrent reservations keep their allowance, and later admission uses
-only the remaining conservative budget. A failed fallback retains unknown usage
-even when a preceding attempt reported counters.
-Invalid host usage, including missing counters that yield NaN, is also unknown.
-Settlement always releases a valid outstanding lease after charging its full
-reservation; queued work cannot remain parked behind malformed usage.
+Ordinary summaries and shadow arms use separate stable accounts keyed by session
+id, independent of dispatch facade identity. Both use the existing
+`sessionSummarizerMaxOutputTokens` value, with no new configuration key. Ordinary
+allowance and admission never depend on shadow spending or in-flight reservations;
+shadow cannot trigger ordinary spend-cap replies or the daemon fallback provider.
+Known shadow usage stays in the shadow account. Combined spending is not bounded
+by one copy of this limit while shadow runs.
+
+B/C reserve equal shadow allowances atomically. An uncapped fork starts immediately
+or records unavailable/refused, and later shadow admission waits until it settles.
+Fork overshoot is recorded. Spending, including failed/invalid output, is charged
+before delivery; known unused allowance is released. Unknown shadow usage sets
+`usageUnknown` on the arm and consumes its shadow reservation conservatively. Every
+later shadow arm is refused with `refusalReason: usageUnknown`, including when a
+bounded failed call leaves some nominal allowance. It never changes the ordinary
+account. Ordinary unknown usage still consumes its own full reservation.
+
+Finite registration caps are floored and clamped to nonnegative safe integers;
+invalid caps retain the default. Invalid host usage is unknown. Settlement releases
+the lease after charging, so queued work cannot hang behind malformed usage. The
+accounts persist for the loaded module's session; unload is not durable storage.
 
 Attempts retain uncached input, output, cache-read and cache-creation counters,
 including fork cache reads. Unknown prices remain unknown. API errors, empty

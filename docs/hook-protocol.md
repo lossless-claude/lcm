@@ -214,13 +214,15 @@ Setting `LCM_SUMMARIZE_WORKER=1` before launch changes summary serving to `GET /
 
 The summarizer's output budget is owned by a stable module registry keyed by
 session id. It survives poller restarts and charges output before answer delivery.
-The opt-in header executor shares this owner, reserves equal B/C allowances and
-records fork overshoot. See
+The opt-in header executor uses a separate shadow account under the same configured
+limit, reserves equal B/C allowances and records fork overshoot. Unknown shadow
+usage refuses later shadow work, while ordinary allowance remains unchanged. See
 [compaction header jobs](design/compaction-header.md).
 
 **Compaction shadow:** plugin `userConfig.compactionShadow` is boolean and defaults
 to `false`. Enabling it causes substantial extra model spending, with the existing
-session output cap shared by all module jobs. When off, neither shadow model calls
+configured output limit applied independently to ordinary and shadow accounts.
+Shadow cannot exhaust or reserve ordinary allowance or trigger its fallback provider. When off, neither shadow model calls
 nor daemon shadow requests occur. When on, `session.append` observes main-session
 model-visible UUIDs without changing the input or result. Only successfully stored
 appends advance the boundary; pending, denied and rejected appends do not, including
