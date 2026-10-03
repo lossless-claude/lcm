@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { isAbsolute, join, parse, resolve, sep } from "node:path";
 import { projectMetaPathIn, readProjectMetaIn } from "../daemon/project-meta.js";
 import { groupIndexPath } from "../daemon/project-group.js";
 import { readHold } from "../daemon/hold.js";
@@ -128,10 +129,36 @@ function staleProjectStores(paths: LcmPaths, cwdErrors?: Map<string, NodeJS.Errn
 
 // Long enough for a local stat on a heavily loaded machine; short enough to bound an unreachable mount.
 export const CWD_CHECK_DEADLINE_MS = 1000;
-export const CWD_CHECK_CONCURRENCY = 4;
+const DEFAULT_THREADPOOL_SIZE = 4;
+const configuredPoolSize = Number.parseInt(process.env.UV_THREADPOOL_SIZE ?? String(DEFAULT_THREADPOOL_SIZE), 10);
+// Invalid or non-positive settings conservatively get no cwd slots.
+const threadpoolSize = Number.isNaN(configuredPoolSize) ? 1 : Math.max(1, configuredPoolSize);
+// Timed-out stats cannot be cancelled. Reserve at least one thread for doctor's
+// later filesystem/DNS work (two with libuv's default pool); a one-thread pool skips cwds.
+const MAX_CWD_CHECK_CONCURRENCY = 2;
+export const CWD_CHECK_CONCURRENCY = Math.min(MAX_CWD_CHECK_CONCURRENCY, threadpoolSize - 1);
 type CwdStat = (cwd: string) => Promise<unknown>;
 
-async function checkCwds(paths: LcmPaths, statCwd: CwdStat): Promise<{
+// Read the kernel's mount table without stat'ing ancestors on a potentially dead mount.
+function cwdMountPoints(): string[] {
+  try {
+    const decode = (path: string) => path.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
+    if (process.platform === "linux") {
+      return readFileSync("/proc/self/mountinfo", "utf8").trim().split("\n")
+        .map(line => decode(line.split(" ")[4]));
+    }
+    if (process.platform === "darwin") {
+      return execFileSync("/sbin/mount", { encoding: "utf8", timeout: CWD_CHECK_DEADLINE_MS })
+        .split("\n").flatMap(line => {
+          const point = / on (.*) \([^)]*\)$/.exec(line)?.[1];
+          return point ? [decode(point)] : [];
+        });
+    }
+  } catch { /* Without a mount table, quarantine conservatively by filesystem root. */ }
+  return [];
+}
+
+async function checkCwds(paths: LcmPaths, statCwd: CwdStat, mountPoints: readonly string[]): Promise<{
   cwdErrors: Map<string, NodeJS.ErrnoException | null>; uncheckedCwds: string[];
 }> {
   const errors = new Map<string, NodeJS.ErrnoException | null>();
@@ -149,25 +176,38 @@ async function checkCwds(paths: LcmPaths, statCwd: CwdStat): Promise<{
       errors.set(dir, new Error("cwd not checked"));
     }
   }
+  const mounts = [...mountPoints].map(point => resolve(point)).sort((a, b) => b.length - a.length);
+  const groups = new Map<string, typeof projects>();
+  for (const project of projects) {
+    const cwd = resolve(project.cwd);
+    const mount = mounts.find(point => cwd === point || cwd.startsWith(point.endsWith(sep) ? point : point + sep))
+      ?? parse(cwd).root;
+    const group = groups.get(mount) ?? [];
+    group.push(project);
+    groups.set(mount, group);
+  }
+  const queue = [...groups.values()];
   let next = 0;
   const worker = async () => {
-    while (next < projects.length) {
-      const { dir, cwd } = projects[next++];
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = Symbol("timeout");
-      try {
-        const result = await Promise.race([
-          Promise.resolve().then(() => statCwd(cwd)).then(() => null, error => error as NodeJS.ErrnoException),
-          new Promise<typeof timeout>(resolve => { timer = setTimeout(() => resolve(timeout), CWD_CHECK_DEADLINE_MS); }),
-        ]);
-        // A timed-out stat cannot be cancelled. Keep its slot occupied instead of
-        // launching an unbounded number of operations against an unreachable mount.
-        if (result === timeout) return;
-        errors.set(dir, result);
-      } finally { clearTimeout(timer); }
+    while (next < queue.length) {
+      // Only one worker probes each mount. A timeout quarantines its remaining cwds.
+      for (const { dir, cwd } of queue[next++]) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = Symbol("timeout");
+        try {
+          const result = await Promise.race([
+            Promise.resolve().then(() => statCwd(cwd)).then(() => null, error => error as NodeJS.ErrnoException),
+            new Promise<typeof timeout>(resolve => { timer = setTimeout(() => resolve(timeout), CWD_CHECK_DEADLINE_MS); }),
+          ]);
+          // A timed-out stat cannot be cancelled. Keep its slot occupied instead of
+          // launching an unbounded number of operations against an unreachable mount.
+          if (result === timeout) return;
+          errors.set(dir, result);
+        } finally { clearTimeout(timer); }
+      }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(CWD_CHECK_CONCURRENCY, projects.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(CWD_CHECK_CONCURRENCY, queue.length) }, worker));
   const uncheckedCwds = projects.filter(({ dir }) => {
     const error = errors.get(dir);
     return error && error.code !== "ENOENT" && error.code !== "ENOTDIR";
@@ -176,8 +216,8 @@ async function checkCwds(paths: LcmPaths, statCwd: CwdStat): Promise<{
 }
 
 /** Read-only: a missing ordinary checkout may be an unmounted disk and is retained. */
-export async function checkStaleProjectStores(paths: LcmPaths, verbose = false, statCwd: CwdStat = stat): Promise<CheckResult> {
-  const { cwdErrors, uncheckedCwds } = await checkCwds(paths, statCwd);
+export async function checkStaleProjectStores(paths: LcmPaths, verbose = false, statCwd: CwdStat = stat, mountPoints: readonly string[] = cwdMountPoints()): Promise<CheckResult> {
+  const { cwdErrors, uncheckedCwds } = await checkCwds(paths, statCwd, mountPoints);
   const { stale, unchecked, recordless, missingMeta, missingCwds } = staleProjectStores(paths, cwdErrors);
   // The full list belongs to the cleanup preview; doctor shows enough to recognise the pattern.
   const lines = doctorList(stale, verbose, store => `     ${store.id}: ${store.cwd}`);
