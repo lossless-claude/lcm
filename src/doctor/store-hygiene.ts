@@ -272,6 +272,7 @@ function processAlive(pid: number): boolean {
 
 /** Defaults to a read-only preview. Apply preserves the complete store in lcm's trash. */
 export function cleanupStaleProjectStores(paths: LcmPaths, apply = false): string {
+  if (apply) requireOffline(paths);
   const { stale, unchecked, recordless } = staleProjectStores(paths);
   const lines = stale.map(store => `     ${store.id}: ${store.cwd}`);
   for (const dir of unchecked) lines.push(`     ${dir}: skipped (unreadable or invalid project record)`);
@@ -283,18 +284,19 @@ export function cleanupStaleProjectStores(paths: LcmPaths, apply = false): strin
     return `[dry-run] Would trash ${stale.length} project stores and their event sidecars\n${lines.join("\n")}\n` +
       "After review: lcm daemon stop --hold; lcm doctor --cleanup-stale-projects --apply; lcm daemon start";
   }
-  requireOffline(paths);
-  if (!stale.length) return `Trashed 0 project stores\n${lines.join("\n")}`;
-
   const batch = join(paths.home, "trash", "projects", `${Date.now()}-${randomUUID()}`);
   const moves: Array<{ from: string; to: string }> = [];
   const move = (from: string, to: string) => {
+    requireOffline(paths);
     renameSync(from, to);
     moves.push({ from, to });
   };
-  const index = existsSync(groupIndexPath(paths)) ? new DatabaseSync(groupIndexPath(paths)) : undefined;
+  let index: DatabaseSync | undefined;
   let transaction = false;
   try {
+    requireOffline(paths);
+    if (!stale.length) return `Trashed 0 project stores\n${lines.join("\n")}`;
+    index = existsSync(groupIndexPath(paths)) ? new DatabaseSync(groupIndexPath(paths)) : undefined;
     if (index) {
       index.exec("PRAGMA busy_timeout = 5000");
       index.exec("BEGIN IMMEDIATE");
@@ -318,20 +320,33 @@ export function cleanupStaleProjectStores(paths: LcmPaths, apply = false): strin
         mkdirSync(join(batch, "events"), { recursive: true });
         move(join(paths.eventsDir, name), join(batch, "events", name));
       }
+      requireOffline(paths);
       index?.prepare("DELETE FROM project_remote WHERE project_id = ?").run(store.id);
       index?.prepare("DELETE FROM project_identity WHERE project_id = ?").run(store.id);
     }
+    requireOffline(paths);
     if (index) { index.exec("COMMIT"); transaction = false; }
   } catch (error) {
     let rollbackFailed = false;
     if (transaction) {
       try { index!.exec("ROLLBACK"); } catch { rollbackFailed = true; }
     }
-    const failed: string[] = [];
-    for (const { from, to } of moves.reverse()) {
-      try { renameSync(to, from); } catch { failed.push(to); }
+    if (!readHold(paths.pidPath)) {
+      const moved = moves.map(({ from, to }) => `     ${from} -> ${to}`);
+      throw new Error(`Cleanup stopped: offline hold lost; moved ${moves.length} path${moves.length === 1 ? "" : "s"}` +
+        (moved.length ? `\nPreserved files needing manual restoration:\n${moved.join("\n")}\nTrash directory: ${batch}` : "") +
+        (rollbackFailed ? "\nGroup-index rollback could not be confirmed" : ""), { cause: error });
     }
-    if (failed.length) throw new Error(`Cleanup failed; preserved files needing manual restoration: ${failed.join(", ")}`, { cause: error });
+    const failed: string[] = [];
+    let holdLost = false;
+    for (const { from, to } of moves.reverse()) {
+      if (holdLost) { failed.push(to); continue; }
+      try { requireOffline(paths); renameSync(to, from); } catch {
+        failed.push(to);
+        holdLost = !readHold(paths.pidPath);
+      }
+    }
+    if (failed.length) throw new Error(`Cleanup ${holdLost ? "stopped: offline hold lost" : "failed"}; preserved files needing manual restoration: ${failed.join(", ")}`, { cause: error });
     if (rollbackFailed) throw new Error("Cleanup failed; files restored but group-index rollback could not be confirmed", { cause: error });
     throw error;
   } finally { index?.close(); }

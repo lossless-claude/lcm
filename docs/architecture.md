@@ -356,12 +356,17 @@ records are counted as not checked, with their complete list in the cleanup prev
 Doctor bounds per-store lists to 20 entries followed by the remaining count;
 verbose diagnostics show the complete lists. Cleanup is a separate CLI path that defaults
 to a read-only preview; explicit apply requires a stopped daemon under an active
-hold and no retained live database activity marker. It rechecks eligibility before
+hold and no retained live database activity marker. It checks the offline guard
+before listing project records, before each store's batch, before each move and
+before committing index changes. It rechecks eligibility before
 moving complete project directories and
 their event sidecars to `<lcm-home>/trash/projects/<batch>/`. The selected
 `project_identity` and `project_remote` rows in `group-index.sqlite` are removed
 in one transaction. A failed move or index update rolls back index changes and
-attempts to restore every moved file; files remain in trash if restoration fails.
+attempts to restore every moved file while the hold remains active; files remain
+in trash if restoration fails. If the hold is lost, cleanup stops without
+restoring files and reports every moved path and its trash location for manual
+restoration under a new hold.
 No stored data is deleted or automatically purged.
 
 For databases without an absolute cwd in their project record, doctor counts
