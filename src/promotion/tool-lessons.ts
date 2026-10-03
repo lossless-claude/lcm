@@ -5,8 +5,12 @@ import { yieldToEventLoop } from "../daemon/project-queue.js";
 import { BATCH_SIZE, lessonKey, ToolLessonProjection, withLessonTransaction } from "./tool-lesson-projection.js";
 
 const SUBCOMMAND_TOOLS = new Set(["git", "npm", "pnpm", "yarn", "pip", "pip3", "brew", "cargo", "docker", "kubectl", "gh", "lcm"]);
+const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh"]);
+const ASSIGNMENT = /^[a-zA-Z_][\w]*=/;
+// A fixed nesting bound keeps repeated wrapper parsing linear in input length.
+const MAX_WRAPPER_DEPTH = 8;
 
-/** Deliberately accepts one simple command; shell control flow cannot prove the executable's outcome. */
+/** Decode one segment, retaining quoted arguments only where a flag masks their value. */
 function commandWords(command: string): string[] | null {
   if (command.startsWith("[")) {
     try {
@@ -15,10 +19,16 @@ function commandWords(command: string): string[] | null {
     } catch { return null; }
   }
   const words: string[] = [];
-  let word = "", quote = "", started = false;
+  const quotedAt: number[] = [];
+  let word = "", quote = "", started = false, firstQuote = -1;
+  const finishWord = () => {
+    if (started) { words.push(word); quotedAt.push(firstQuote); }
+    word = ""; started = false; firstQuote = -1;
+  };
   for (let index = 0; index < command.length; index++) {
     const char = command[index];
     if (char === "\\" && quote !== "'") {
+      if (firstQuote < 0) firstQuote = word.length;
       if (++index === command.length) return null;
       word += command[index]; started = true; continue;
     }
@@ -30,17 +40,69 @@ function commandWords(command: string): string[] | null {
       }
       continue;
     }
-    if (char === "'" || char === '"') { quote = char; started = true; continue; }
+    if (char === "'" || char === '"') {
+      if (firstQuote < 0) firstQuote = word.length;
+      quote = char; started = true; continue;
+    }
     if (/[;&|<>$`\n\r()]/.test(char)) return null;
     if (/\s/.test(char)) {
-      if (started) words.push(word);
-      word = ""; started = false; continue;
+      finishWord(); continue;
     }
     word += char; started = true;
   }
   if (quote) return null;
-  if (started) words.push(word);
-  return words.length ? words : null;
+  finishWord();
+  if (!words.length) return null;
+  const executableIndex = words.findIndex((value, index) => !ASSIGNMENT.test(value)
+    || (quotedAt[index] >= 0 && quotedAt[index] <= value.indexOf("=")));
+  if (executableIndex >= 0 && ASSIGNMENT.test(words[executableIndex])) return null;
+  const wrapper = executableIndex >= 0 && SHELL_WRAPPERS.has(basename(words[executableIndex]));
+  return words.map((value, index) => {
+    if (index <= executableIndex) return value;
+    if (wrapper || quotedAt[index] < 0) return value;
+    if (/^-[a-zA-Z]/.test(value) && quotedAt[index] >= 2) return value;
+    if (/^--[a-zA-Z][\w-]*=/.test(value) && quotedAt[index] > value.indexOf("=")) return value;
+    return "<args>";
+  });
+}
+
+interface CommandSegment { command: string; operator: string }
+
+/** Split only unquoted operators, validating the whole input before dropping setup. */
+function commandSegments(command: string): CommandSegment[] | null {
+  if (command.startsWith("[")) return [{ command, operator: "" }];
+  const segments: CommandSegment[] = [];
+  let quote = "", start = 0;
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
+    if (char === "\\" && quote !== "'") {
+      if (++index === command.length) return null;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = "";
+      else if (quote === '"' && /[$`]/.test(char)) return null;
+      continue;
+    }
+    if (char === "'" || char === '"') { quote = char; continue; }
+    if (char === "#" && (index === start || /\s/.test(command[index - 1]))) return null;
+    if (/[<>$`\n\r()]/.test(char)) return null;
+    if (/[;&|]/.test(char)) {
+      let operator = char;
+      if ((char === "&" || char === "|") && command[index + 1] === char) operator += char;
+      else if (char === "&") return null;
+      const segment = command.slice(start, index).trim();
+      if (!segment) return null;
+      segments.push({ command: segment, operator });
+      index += operator.length - 1;
+      start = index + 1;
+    }
+  }
+  if (quote) return null;
+  const last = command.slice(start).trim();
+  if (!last) return null;
+  segments.push({ command: last, operator: "" });
+  return segments;
 }
 
 const GLOBAL_VALUE_FLAGS = new Set(["-C", "-c", "--prefix", "--cwd", "--directory", "--git-dir", "--work-tree", "--config"]);
@@ -69,10 +131,29 @@ function shapeFlag(word: string, executable: string): { name: string; hasValue: 
   return { name: word, hasValue: false };
 }
 
-/** Values share one placeholder so attached and separated flag values form the same shape. */
-export function commandShape(command: string): string | null {
-  const words = commandWords(command);
-  if (!words?.length) return null;
+interface FlagNode { children: Map<string, FlagNode>; flag?: string }
+
+/** Trie ordering visits each flag character once; each node has a fixed ASCII alphabet. */
+function sortedFlags(flags: Set<string>): string[] {
+  const root: FlagNode = { children: new Map() };
+  for (const flag of flags) {
+    let node = root;
+    for (const char of flag) {
+      if (!node.children.has(char)) node.children.set(char, { children: new Map() });
+      node = node.children.get(char)!;
+    }
+    node.flag = flag;
+  }
+  const sorted: string[] = [], pending = [root];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.flag) sorted.push(node.flag);
+    for (const char of [...node.children.keys()].sort().reverse()) pending.push(node.children.get(char)!);
+  }
+  return sorted;
+}
+
+function simpleCommandShape(words: readonly string[]): string | null {
   const executable = basename(words[0]);
   if (!/^[a-zA-Z][\w.-]*$/.test(executable)) return null;
   if (["sh", "bash", "zsh", "env", "sudo", "xargs"].includes(executable)) return null;
@@ -85,13 +166,47 @@ export function commandShape(command: string): string | null {
     if (index === subcommand) continue;
     const word = words[index];
     if (word === "--") { positional = true; continue; }
-    if (!positional && /^--?[a-zA-Z]/.test(word)) {
+    if (!positional && (/^-[a-zA-Z]/.test(word) || /^--[a-zA-Z][\w-]*(?:=.*)?$/.test(word))) {
       const flag = shapeFlag(word, executable);
       flags.add(flag.name);
       hasValues ||= flag.hasValue;
     } else hasValues = true;
   }
-  return [...parts, ...[...flags].sort(), ...(hasValues ? ["<args>"] : [])].join(" ");
+  return [...parts, ...sortedFlags(flags), ...(hasValues ? ["<args>"] : [])].join(" ");
+}
+
+function shellCommandShape(command: string, depth: number): string | null {
+  if (depth > MAX_WRAPPER_DEPTH) return null;
+  const segments = commandSegments(command.trim());
+  if (!segments) return null;
+  const parts: string[] = [];
+  for (const segment of segments) {
+    const parsed = commandWords(segment.command);
+    if (!parsed) return null;
+    let start = 0;
+    while (start < parsed.length && ASSIGNMENT.test(parsed[start])) start++;
+    const words = parsed.slice(start);
+    if (!words.length) return null;
+    const executable = basename(words[0]);
+    if (!parts.length && executable === "cd" && words.length === 2
+      && (segment.operator === "&&" || segment.operator === ";")) continue;
+    let shape: string | null;
+    if (SHELL_WRAPPERS.has(executable)) {
+      if (words.length !== 3 || !["-c", "-lc", "-cl"].includes(words[1])) return null;
+      shape = shellCommandShape(words[2], depth + 1);
+      // A wrapper groups its inner chain; preserve that grouping in an outer chain.
+      if (shape && (parts.length > 0 || segment.operator) && / [;&|]+ /.test(shape)) shape = `(${shape})`;
+    } else shape = simpleCommandShape(words);
+    if (!shape) return null;
+    parts.push(shape);
+    if (segment.operator) parts.push(segment.operator);
+  }
+  return parts.length ? parts.join(" ") : null;
+}
+
+/** Values share one placeholder; a chain retains one shape and one observed outcome. */
+export function commandShape(command: string): string | null {
+  return shellCommandShape(command, 0);
 }
 
 const CALL_WINDOW = 20;

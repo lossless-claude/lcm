@@ -66,7 +66,10 @@ const SOURCE_TRIGGERS = `
 
 /** Journal source mutations transactionally; current stores need no write lock. */
 export function ensureToolLessonIncrementalSchema(db: DatabaseSync): void {
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'tool_lesson_changes'").get()) return;
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'tool_lesson_changes'").get()) {
+    rederiveToolLessonShapesOnce(db);
+    return;
+  }
   db.exec("SAVEPOINT tool_lesson_schema");
   try {
     db.exec(INCREMENTAL_TABLES);
@@ -84,6 +87,27 @@ export function ensureToolLessonIncrementalSchema(db: DatabaseSync): void {
     db.exec("RELEASE tool_lesson_schema");
   } catch (error) {
     db.exec("ROLLBACK TO tool_lesson_schema; RELEASE tool_lesson_schema");
+    throw error;
+  }
+  rederiveToolLessonShapesOnce(db);
+}
+
+/** Queue the new shape format once, without changing the published snapshot on open. */
+function rederiveToolLessonShapesOnce(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS tool_lesson_shape_backfill (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  if (db.prepare("SELECT 1 FROM tool_lesson_shape_backfill WHERE id = 1").get()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM tool_lesson_shape_backfill WHERE id = 1").get()) {
+      db.exec(`INSERT OR IGNORE INTO tool_lesson_changes SELECT session_id, call_id FROM transcript_tool_calls;
+        INSERT INTO tool_lesson_shape_backfill (id) VALUES (1);`);
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
     throw error;
   }
 }
