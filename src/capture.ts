@@ -1,5 +1,7 @@
 import { TIMELINE_SESSION_ID } from "./db/project-timeline.js";
 import { WorkerStore } from "./store/worker-store.js";
+import { performance } from "node:perf_hooks";
+import { yieldToEventLoop } from "./daemon/project-queue.js";
 import { discoverWorkerDescendant, discoveredWorkerDescendant } from "./worker-session.js";
 import type { DatabaseSync } from "node:sqlite";
 import { statSync } from "node:fs";
@@ -49,6 +51,13 @@ import {
  */
 
 export type RedactionCounts = { gitleaks: number; builtIn: number; global: number; project: number };
+
+const SCRUB_TIME_BUDGET_MS = 10;
+interface ScrubbedMessage {
+  content: string;
+  parts: MessagePart[];
+  counts: RedactionCounts;
+}
 
 /** Structured messages have no Claude parser provenance; a later transcript capture must verify them. */
 export const STRUCTURED_INGEST_SHAPE = "structured";
@@ -207,7 +216,7 @@ export class SessionCapture {
     if (discoveredCwd !== undefined) {
       await this.conversationStore.withTransaction(() => this.writeInTransaction({
         sessionId: input.sessionId, cwd: input.cwd, messages: [], transcriptPath, attribution: input.attribution,
-      }, discoveredCwd));
+      }, new Map(), discoveredCwd));
       return undefined;
     }
     const stored = await this.stored(input.sessionId);
@@ -289,7 +298,10 @@ export class SessionCapture {
   async write(input: CaptureInput): Promise<CaptureResult> {
     if (input.sessionId === TIMELINE_SESSION_ID) return { conversationId: 0, records: [], totalCounts: { gitleaks: 0, builtIn: 0, global: 0, project: 0 } };
     const discoveredCwd = discoverWorkerDescendant(new WorkerStore(this.db), input.sessionId, input.transcriptPath);
-    return this.conversationStore.withTransaction(() => this.writeInTransaction(input, discoveredCwd));
+    const storedCount = await this.conversationStore.getSessionMessageCount(input.sessionId);
+    const start = Math.max(0, storedCount - (input.sourceOffset ?? 0));
+    const scrubbed = await this.scrub(input.messages.slice(start));
+    return this.conversationStore.withTransaction(() => this.writeInTransaction(input, scrubbed, discoveredCwd));
   }
 
   /**
@@ -308,6 +320,7 @@ export class SessionCapture {
     // Parsed before the transaction takes the write lock; the plan reads it only when not aligned.
     const legacy = transcriptPath ? parseTranscript(transcriptPath, "legacy") : undefined;
     const discoveredCwd = discoverWorkerDescendant(new WorkerStore(this.db), input.sessionId, transcriptPath);
+    const scrubbed = await this.scrub(delta?.messages ?? []);
     return this.conversationStore.withTransaction(async () => {
       if (new WorkerStore(this.db).excluded(input.sessionId)) return {
         plan: { kind: "unavailable", sessionId: input.sessionId, reason: "Worker session is excluded" } as SessionRebuildPlan, ingested: 0,
@@ -326,7 +339,7 @@ export class SessionCapture {
         plan: { kind: "unavailable", sessionId: input.sessionId, reason: "Worker session is excluded" } as SessionRebuildPlan, ingested: 0,
       };
       clearConversationForRebuild(this.db, plan.conversationId, input.sessionId);
-      const written = await this.writeInTransaction(rebuild, discoveredCwd);
+      const written = await this.writeInTransaction(rebuild, scrubbed, discoveredCwd);
       this.conversationStore.setParserShape(plan.conversationId, CLAUDE_PARSER_SHAPE);
       return { plan, ingested: written.records.length };
     });
@@ -360,7 +373,9 @@ export class SessionCapture {
     return true;
   }
 
-  private async writeInTransaction(input: CaptureInput, discoveredCwd?: string): Promise<CaptureResult> {
+  private async writeInTransaction(
+    input: CaptureInput, scrubbed: Map<ParsedMessage, ScrubbedMessage>, discoveredCwd?: string,
+  ): Promise<CaptureResult> {
     if (this.refusedByWorkerGate(input, discoveredCwd)) {
       return { conversationId: 0, records: [], totalCounts: { gitleaks: 0, builtIn: 0, global: 0, project: 0 } };
     }
@@ -379,11 +394,11 @@ export class SessionCapture {
     const totalCounts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
     for (const { entryId, at } of input.boundaries ?? []) {
       if (at < start) continue;
-      records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start, at), totalCounts, messageIds));
+      records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start, at), totalCounts, messageIds, scrubbed));
       conversationId = (await this.conversationStore.getOrOpenConversationAt(input.sessionId, entryId, attribution, parserShape)).conversationId;
       start = at;
     }
-    records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start), totalCounts, messageIds));
+    records.push(...await this.append(input.sessionId, conversationId, input.messages.slice(start), totalCounts, messageIds, scrubbed));
     recordTranscriptToolCalls(this.db, input.sessionId, input.toolCalls ?? [], messageIds, this.scrubber);
     if (input.restampParserShape) this.conversationStore.setSessionParserShape(input.sessionId, CLAUDE_PARSER_SHAPE);
     else if (parserShape === STRUCTURED_INGEST_SHAPE) this.conversationStore.setSessionParserShape(input.sessionId, STRUCTURED_INGEST_SHAPE);
@@ -395,25 +410,59 @@ export class SessionCapture {
   /** Appends messages after what the conversation already stores, with their context items and parts. */
   private async append(
     sessionId: string, conversationId: number, newMessages: ParsedMessage[], totalCounts: RedactionCounts, messageIds: Map<ParsedMessage, number>,
+    scrubbed: Map<ParsedMessage, ScrubbedMessage>,
   ): Promise<MessageRecord[]> {
     if (newMessages.length === 0) return [];
     const storedCount = await this.conversationStore.getMessageCount(conversationId);
-    const inputs = this.scrub(newMessages, conversationId, storedCount, totalCounts);
+    const inputs: CreateMessageInput[] = newMessages.map((m, i) => {
+      // A history that shrank after the pre-transaction pass leaves messages unprepared.
+      let prepared = scrubbed.get(m);
+      if (!prepared) scrubbed.set(m, prepared = this.scrubMessage(m));
+      totalCounts.gitleaks += prepared.counts.gitleaks;
+      totalCounts.builtIn += prepared.counts.builtIn;
+      totalCounts.global += prepared.counts.global;
+      totalCounts.project += prepared.counts.project;
+      const eventAt = transcriptEventTime(m.eventAt);
+      return { conversationId, seq: storedCount + i, role: m.role as MessageRole, content: prepared.content, tokenCount: m.tokenCount, eventAt: eventAt ? new Date(eventAt) : null };
+    });
     const created = await this.conversationStore.createMessagesBulk(inputs);
     created.forEach((record, index) => messageIds.set(newMessages[index], record.messageId));
     await this.summaryStore.appendContextMessages(conversationId, created.map((r) => r.messageId));
-    await this.persistMessageParts(sessionId, newMessages, created, totalCounts);
+    await this.persistMessageParts(sessionId, newMessages, created, scrubbed);
     return created;
   }
 
-  private scrub(
-    newMessages: ParsedMessage[], conversationId: number, storedCount: number, totalCounts: RedactionCounts,
-  ): CreateMessageInput[] {
-    return newMessages.map((m, i) => {
-      const text = this.scrubCounted(m.content, totalCounts);
-      const eventAt = transcriptEventTime(m.eventAt);
-      return { conversationId, seq: storedCount + i, role: m.role as MessageRole, content: normalizeMessageContent(text), tokenCount: m.tokenCount, eventAt: eventAt ? new Date(eventAt) : null };
-    });
+  /** Prepare text and string arguments before taking the write lock; one scrub can overrun the budget. */
+  private async scrub(newMessages: ParsedMessage[]): Promise<Map<ParsedMessage, ScrubbedMessage>> {
+    const scrubbed = new Map<ParsedMessage, ScrubbedMessage>();
+    let started = performance.now();
+    const maybeYield = async () => {
+      if (performance.now() - started < SCRUB_TIME_BUDGET_MS) return;
+      await yieldToEventLoop();
+      started = performance.now();
+    };
+    for (const message of newMessages) {
+      const counts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
+      const content = normalizeMessageContent(this.scrubCounted(message.content, counts));
+      await maybeYield();
+      const parts: MessagePart[] = [];
+      for (const part of message.parts ?? []) {
+        // Structured ingest can carry parts of other shapes, without string args.
+        parts.push(typeof part.args === "string" ? { ...part, args: this.scrubCounted(part.args, counts) } : part);
+        if (typeof part.args === "string") await maybeYield();
+      }
+      scrubbed.set(message, { content, parts, counts });
+    }
+    return scrubbed;
+  }
+
+  /** The synchronous form, for a message the pre-transaction pass did not prepare. */
+  private scrubMessage(message: ParsedMessage): ScrubbedMessage {
+    const counts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
+    const content = normalizeMessageContent(this.scrubCounted(message.content, counts));
+    const parts = (message.parts ?? []).map(part =>
+      typeof part.args === "string" ? { ...part, args: this.scrubCounted(part.args, counts) } : part);
+    return { content, parts, counts };
   }
 
   /** Every text capture persists goes through here, so its matches are counted with the rest. */
@@ -432,16 +481,14 @@ export class SessionCapture {
    * newly-inserted message carried it.
    */
   private async persistMessageParts(
-    sessionId: string, sourceMessages: ParsedMessage[], created: MessageRecord[], totalCounts: RedactionCounts,
+    sessionId: string, sourceMessages: ParsedMessage[], created: MessageRecord[], scrubbed: Map<ParsedMessage, ScrubbedMessage>,
   ): Promise<void> {
     for (let i = 0; i < created.length; i++) {
-      const parts = sourceMessages[i]?.parts;
+      const parts = scrubbed.get(sourceMessages[i])?.parts;
       if (!parts || parts.length === 0) continue;
       await this.conversationStore.createMessageParts(
         created[i].messageId,
-        // Structured ingest can carry parts of other shapes, without string args.
-        parts.map((part, ordinal) => toMessagePartInput(sessionId,
-          typeof part.args === "string" ? { ...part, args: this.scrubCounted(part.args, totalCounts) } : part, ordinal)),
+        parts.map((part, ordinal) => toMessagePartInput(sessionId, part, ordinal)),
       );
     }
   }

@@ -64,6 +64,8 @@ When using an external summarizer, only the text being summarized is sent — no
 
 lcm scrubs secrets from message content **before writing to SQLite** and **before sending to the summarizer**. Redaction happens at both write points to ensure secrets are never persisted or transmitted. The same rules apply to the skill and slash-command arguments stored beside a message, and their matches are counted with the message's.
 
+Capture prepares scrubbed message text and string arguments before opening its write transaction, yielding to the event loop whenever its 10 ms work budget is spent. One scrub can overrun that budget. The message delta, parts, redaction counts and checkpoint still commit together.
+
 ### Built-in patterns
 
 Two sets are always active, regardless of configuration:
