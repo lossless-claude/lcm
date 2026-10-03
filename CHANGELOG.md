@@ -1,5 +1,43 @@
 # @lossless-claude/lcm
 
+## 0.16.0
+
+### Minor Changes
+
+- ad6c93f: Add deterministic human-message excerpts, version-2 working-state header jobs and a typed three-arm executor behind an unwired interface. Keep every human message and shorten only an oversized message's middle with a raw-row marker. Document sizing yields oldest summaries and records overflow without removing user messages.
+
+  Share session output-token accounting between ordinary summaries and header arms, reserve concurrent allowances, retain all four header usage counters and account failed output before delivery. Preserve unavailable input hashes as unknown and support version-2 shadow records and phase-1 document measurements. No compaction hook or conversation replacement is enabled.
+
+  Resolve and persist every header citation per item as resolved, missing or ambiguous while preserving shadow answer outcomes. Expose one live acceptance predicate and never guess ambiguous quotes. Unknown usage consumes a lease's full reservation, including failed ordinary calls and fallbacks.
+
+  Exclude shell-interaction and interruption rows from user excerpts, normalize registration caps to safe integers, and release leases conservatively on invalid host usage. Fence every header source block so source content cannot close a fence or forge trusted headings.
+
+- 58aa5fa: Add daemon-owned compaction shadow artifacts with verified cut snapshots, independent native and arm results, exact cache usage, project scrubbing and 30-day retention. Benchmark exclusions optionally skip shadow admission; a missing evaluation policy does not disable capture. Unreadable or invalid policies refuse admission with a reason and a warning; corpus discovery skips non-directory entries and unreadable metadata. No shadow hook or model executor is enabled.
+
+  Add read-only phase-1 triage for shadow artifacts and historical native compaction records, with seeded sampling, strict exclusions, verbatim-user probes, deterministic provenance checks, cost/size reports and a frozen phase-2 continuation-scoring stub.
+
+  Require transcript-owned project metadata, list-valued corpus policies and strictly earlier cut ancestry. Re-scrub frozen window text with current rules.
+
+  Skip symlinked ancestors during shadow recovery and validate real-path containment before recursive cleanup. Preserve validated correlation identifiers, reject sensitive or malformed identifiers, and bind admission retries to a raw identity digest so redaction cannot collapse distinct requests.
+
+  Validate model names with one shared rule and retain them exactly in cuts, arm records, usage attempts and evaluation reports; scrub free text while preserving model identifiers.
+
+  Exclude sessions containing any excluded row cwd before loading evidence, validate every exported identifier including historical UUIDs, and preserve supersession identifiers. Bind admission retries to raw engine messages and skip linked metadata files during recovery.
+
+  Validate recorded transcript session ids before applying exclusion and block their shadow cuts even when a supplied session label is wrong. Reject native tails that do not match frozen engine handles, order, roles and current-rule scrubbed text; skip conflicting legacy cuts during evaluation.
+
+- cd374a3: Add default-off compaction shadow measurement through the function-hooks module. Three header arms share the existing session output budget and persist paired documents beside native compaction without changing its result.
+
+### Patch Changes
+
+- ad4750a: Preserve operator holds on daemon restart unless `--release-hold` is explicit.
+  Check the offline hold before stale-store cleanup lists projects and throughout
+  its moves; stop and report recoverable moved paths if the hold is lost.
+- 6881251: Isolate compaction shadow accounting from ordinary summaries, and refuse further shadow calls after unknown usage without triggering ordinary provider fallback. Prepare header inputs before publishing a cut so failed preparation leaves no pending artifact.
+- 288034a: Reserve threadpool headroom for doctor and quarantine timed-out cwd mounts so other mounts can still be checked.
+- 1b11645: Bound daemon health probes by the caller's remaining lifecycle budget so busy daemons can still serve hooks, while non-answering listeners cannot hold hooks open or trigger replacement spawns. Give CLI clients a 10-second lifecycle budget and standalone health checks a bounded 5-second default. Keep connect-only and unawaited module health probes at 500 ms. Include shutdown probes in the stop budget and never report a non-answering listener as stopped. Report the stuck listener once per session, allow 10 seconds for function-hook restore and 5 seconds for other POSTs, and reserve lifecycle time inside PreCompact's host timeout.
+- 3be76f2: Prune the function-hooks module's per-session output budgets when a session ends, so a long-lived host that goes through many sessions no longer keeps one entry per session id. An entry with a lease still pending is removed when its last lease settles, and work that already holds a budget keeps spending on it.
+
 ## 0.15.0
 
 ### Minor Changes
