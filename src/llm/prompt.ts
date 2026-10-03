@@ -29,6 +29,7 @@ export function buildSummaryPrompt(
     : buildLeafSummaryPrompt({
         text, mode: aggressive ? "aggressive" : "normal", targetTokens,
         previousSummary: ctx.previousSummary, language: ctx.language, customInstructions: ctx.customInstructions,
+        toolContext: ctx.toolContext,
       });
 }
 

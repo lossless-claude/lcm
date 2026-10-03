@@ -10,7 +10,7 @@ Hook observation preserves host deadlines and fail-open behavior. Local diagnost
 
 For a pre-compaction invocation, lcm attempts Capture before its own summarization. A successful Capture attempt with zero new messages still permits summarization of stored history. A failed or deferred Capture skips only this invocation's lcm summary; native harness compaction continues. A client timeout does not establish Capture failure: the daemon may later finish and record the outcome. Summarizer disablement or an already-running summary cannot silently suppress the Capture attempt. Busy admission for daemon-owned Capture is decided when the invocation arrives: it skips this invocation's summary but still permits Capture, even if the prior summary finishes before Capture begins. A verified OMP request rechecks admission immediately before queue insertion after awaited summarizer setup. A later summary failure does not erase evidence that Capture succeeded.
 
-`/session-end` returning `202` establishes acceptance by the running daemon, not durable completion or recovery after daemon restart. Its later Capture and follow-up outcomes remain separate.
+`/session-end` returning `202` establishes acceptance by the running daemon, not durable completion or recovery after daemon restart. SessionEnd records `submitted` when its complete request is flushed but no answer arrives within the 100 ms response grace. Its later Capture and follow-up outcomes remain separate.
 
 ## Seams
 

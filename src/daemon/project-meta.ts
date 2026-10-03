@@ -28,7 +28,7 @@ export interface ProjectMeta {
   [key: string]: unknown;
 }
 
-const metaPathIn = (projectDir: string): string => join(projectDir, "meta.json");
+export const projectMetaPathIn = (projectDir: string): string => join(projectDir, "meta.json");
 
 function readMetaFile(metaPath: string): ProjectMeta | null {
   let content: string;
@@ -67,7 +67,7 @@ export const readProjectMeta = (cwd: string, paths: LcmPaths): ProjectMeta | nul
 
 /** The record in a project directory (for callers enumerating `projects/*`). */
 export const readProjectMetaIn = (projectDir: string): ProjectMeta | null =>
-  readMetaFile(metaPathIn(projectDir));
+  readMetaFile(projectMetaPathIn(projectDir));
 
 /** Recovery reads regular metadata files only, without following a file link. */
 export function readProjectMetaInNoLinks(projectDir: string): ProjectMeta | null {
@@ -88,4 +88,4 @@ export const updateProjectMeta = (cwd: string, paths: LcmPaths, patch: ProjectMe
 
 /** Merges `patch` into the record in a project directory. */
 export const updateProjectMetaIn = (projectDir: string, patch: ProjectMeta): ProjectMeta =>
-  updateMetaFile(metaPathIn(projectDir), patch);
+  updateMetaFile(projectMetaPathIn(projectDir), patch);

@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
+import { setImmediate as yieldLoop } from "node:timers/promises";
 import { closeLcmConnection } from "../db/connection.js";
 import { PromotedStore, type SearchResult } from "../db/promoted.js";
 import { RecallStore, type RecallFeedback } from "../db/recall.js";
 import { projectDbPath } from "../daemon/project.js";
 import { projectGroup, projectRef } from "../daemon/project-group.js";
-import { openMigrated } from "./migrated-connection.js";
+import { openMigrated, openPromotedRead } from "./migrated-connection.js";
 import type { ProjectRef } from "./native-history.js";
 import type { LcmPaths } from "../lcm-paths.js";
 
@@ -64,6 +65,8 @@ interface GroupSearchInput {
   terms?: readonly string[];
   /** Read recall feedback alongside the hits. Only the prompt hook needs it. */
   withFeedback?: boolean;
+  /** Scheduling seam: release the event loop between members. */
+  yieldBetweenMembers?: () => Promise<void>;
 }
 
 /**
@@ -72,14 +75,16 @@ interface GroupSearchInput {
  * A group of one takes the single-database path unchanged, so a project that
  * shares its repository with nothing keeps exactly the ranking it had.
  */
-export function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths: LcmPaths): GroupPromotedSearch {
+export async function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths: LcmPaths): Promise<GroupPromotedSearch> {
   const members = projectGroup(cwd, paths);
   const lists: GroupPromotedHit[][] = [];
   const feedback = new Map<string, RecallFeedback>();
-  for (const member of members) {
+  for (let index = 0; index < members.length; index++) {
+    if (index > 0) await (input.yieldBetweenMembers ?? yieldLoop)();
+    const member = members[index];
     const dbPath = projectDbPath(member.cwd, paths);
     if (!existsSync(dbPath)) continue;
-    const db = openMigrated(dbPath);
+    const db = openPromotedRead(dbPath);
     try {
       const found = new PromotedStore(db).search(input.query, input.limit, input.tags, undefined, input.terms);
       if (found.length === 0) continue;
@@ -90,7 +95,7 @@ export function searchPromotedGroup(cwd: string, input: GroupSearchInput, paths:
         }
       }
     } finally {
-      closeLcmConnection(dbPath);
+      closeLcmConnection(dbPath, { readOnly: true });
     }
   }
   const hits = lists.length <= 1

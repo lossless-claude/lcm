@@ -137,6 +137,12 @@ phase-2 stub. The output directory must not already exist.
 
 ### Project store hygiene
 
+`lcm doctor` counts project directories without a `meta.json` file and directories
+whose recorded absolute cwd no longer exists, including ordinary missing
+checkouts. Corrupt or unreadable records are not counted as missing files.
+These counts are read-only and do not change the check's status; cleanup remains an
+explicit operator action.
+
 `lcm doctor` reports stores whose recorded working directory no longer exists and
 was under a system temporary directory (under its path or its resolved real path,
 such as macOS `/private/var/folders`), or has an `e2e-test-*` or
@@ -518,6 +524,27 @@ flags prior nodes stale and publishes replacements.
 - Smaller chunks create summaries more frequently from less material.
 - This also affects the condensed minimum input threshold (10% of this value).
 
+### Leaf summary input
+
+Leaf summaries receive timestamped messages and the preceding summary for
+continuity. When the window's stored shell calls establish error→fix pairs or
+block reasons, the same summary call also receives a `tool_context` JSON block.
+It asks the model to keep each entry briefly: for every pair, the failed command
+and the command that worked after it; for every block, the command and its masked
+reason. `errorFixPairs` names the failed and successful commands;
+`blocked` contains distinct `{ command, reason }` entries, with the command read
+from its stored call and the reason masked. Each failure, fix and block belongs
+only to the command it names. This uses the window's own calls, independently of
+the project's published tool lessons, and adds no model call.
+
+The structured JSON is capped at 8192 UTF-8 bytes. Each command and reason is
+capped at 2048 bytes, preserving UTF-8 boundaries and ending with `[truncated]`
+when capped, like stored call inputs. Complete entries that do not fit are
+omitted; `omitted` reports their count. The fixed prompt instructions are
+outside this byte budget. With no pairs or block reasons, the leaf prompt is
+unchanged, including in aggressive mode. These limits are fixed, not config
+settings. See [the eval bench](summarizer-bench.md) for retention checks.
+
 ### Summary language
 
 `summarizer.language` controls the language of newly generated summaries:
@@ -678,7 +705,7 @@ Each link is tried once per summarization, after its own retries, plus one retry
 - cannot be reached, times out, or is still unavailable after its retries (408, 429, 5xx);
 - is a process provider whose CLI run fails.
 
-Anything else fails the pass without trying the next link: a request the endpoint refuses as invalid (400, 422) — except the retry of a cut-off answer, whose larger cap may exceed the model's output limit —, a cancelled request, a client library that is not installed, or any error lcm does not recognise. When every link fails, the pass fails with one error naming each link's failure; it never falls back to storing raw text. Every attempt is recorded under its endpoint's name, so an answer DeepSeek cut off counts as a failed `deepseek` call even when OpenRouter's answer is the one stored. An HTTP or process attempt that failed before any usage came back (a refused key, a failed CLI run) is recorded as a failed call with no tokens, and an answer that carried no usage is still attributed to the endpoint that gave it, with that endpoint's configured model. `lcm doctor` checks the CLI of every process endpoint the chain lists.
+Anything else fails the pass without trying the next link: a request the endpoint refuses as invalid (400, 422) — except the retry of a cut-off answer, whose larger cap may exceed the model's output limit —, a cancelled request, a client library that is not installed, or any error lcm does not recognise. When every link fails, the chain throws one error naming each link's failure. Compaction recovers from output cuts by splitting the source chunk and ultimately truncating a single source; other exhaustion fails the pass. Every attempt is recorded under its endpoint's name, so an answer DeepSeek cut off counts as a failed `deepseek` call even when OpenRouter's answer is the one stored. An HTTP or process attempt that failed before any usage came back (a refused key, a failed CLI run) is recorded as a failed call with no tokens, and an answer that carried no usage is still attributed to the endpoint that gave it, with that endpoint's configured model. `lcm doctor` checks the CLI of every process endpoint the chain lists.
 
 ### Session provider
 
@@ -823,9 +850,15 @@ response ends with `finish_reason: "length"`, or the `anthropic` provider's with
 `stop_reason: "max_tokens"`, the answer is rejected however readable its text is:
 the output budget ran out, often spent on reasoning. So is an answer from any
 provider that holds only whitespace. A rejected answer moves the chain to its next
-link; with none left, it fails that compaction pass (`compact.failed`, naming the
-rejection): nothing from the pass is stored, and a replay leaves the session for its
-next run. The call's tokens are still counted, as a failed call.
+link. With none left, an output-cut rejection makes compaction halve the source chunk
+at message boundaries, each half through the normal escalation, at most three times
+(eight pieces). If a single message, or a piece at that limit, still gets cut answers,
+deterministic source truncation is
+stored at level `fallback`; raw messages remain reachable through `lcm_expand`.
+Condensation splits at source-summary boundaries. Rejected answer text is never stored.
+Whitespace-only exhaustion and other failures still abort the pass (`compact.failed`),
+leaving replay to retry the session. Every rejected call's tokens are counted as failed,
+even when splitting completes the compaction.
 
 The same request stops the same way, so before moving on, an answer cut off at the
 output cap is asked for once more on the same endpoint with a changed request: the
@@ -834,8 +867,14 @@ at. A condensed summary has no shorter prompt and gets the larger cap alone. The
 is a call of its own, counted like any other, and happens once per endpoint per chunk:
 a request that already used the shorter prompt, including the compaction's own shorter
 retry of a summary that did not shrink, moves on at its first length stop. If a retry
-still stops at the cap, keep reasoning from spending the budget with the endpoint's
-`body` (or `llm.reasoning` in the flat form).
+still stops at the cap, compaction uses the bounded split recovery described in
+[Three-level escalation](architecture.md#three-level-escalation). For an n-source
+chunk with p links whose answers are always cut, splitting adds at most 4p(n − 1)
+calls. Each cut is logged as `summarizer.cut` with provider, model, cap, reported
+output tokens (null when unknown), and the fraction of repeated four-word windows
+in the answer's tail. No answer or source text is logged. A high repetition fraction
+suggests a generation loop; hidden reasoning can also consume the output budget.
+An endpoint's `body` (or `llm.reasoning` in the flat form) can limit that reasoning.
 
 ### Token cost reporting
 
@@ -973,6 +1012,21 @@ SELECT depth, COUNT(*) FROM summaries GROUP BY depth;
 # Find large summaries
 SELECT summary_id, depth, token_count FROM summaries ORDER BY token_count DESC LIMIT 10;
 ```
+
+### Environment-warning measurement
+
+Run `lcm stats --warning-backtest` in a project directory to print its offline
+environment-warning report instead of the all-project stats overview. Stats fits this measurement
+of stored memory; doctor is for installation health. The backtest runs directly in the
+CLI, without a daemon, a model call, migrations or writes to the project database.
+It scans stored calls only when this flag is supplied, since a large store may take
+time to order and walk. The flag cannot be combined with `--pool` or `--json`.
+
+The report includes point-in-time matches, precision, failure coverage, unmatched
+failures and excluded outcomes, plus total, average and maximum would-be bytes and
+estimated tokens per matching session. With no stored calls, the measurements are
+unknown. Warnings remain off; nothing is injected or denied. See
+[the replay rules and cost accounting](passive-learning.md#environment-warning-backtest).
 
 ### Backup
 

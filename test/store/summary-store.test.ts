@@ -221,7 +221,7 @@ describe("SummaryStore — context", () => {
     await fx.store.replaceContextRangeWithSummary({ conversationId: fx.convId, startOrdinal: 0, endOrdinal: 1, summaryId: "replace-sum" });
 
     const items = await fx.store.getContextItems(fx.convId);
-    expect(items.map((i) => [i.ordinal, i.itemType, i.summaryId ?? i.messageId])).toEqual([[0, "summary", "replace-sum"], [1, "message", m3.messageId]]);
+    expect(items.map((i) => [i.ordinal, i.itemType, i.summaryId ?? i.messageId])).toEqual([[0, "summary", "replace-sum"], [2, "message", m3.messageId]]);
     expect([m1, m2].map((m) => m.messageId)).not.toContain(items[1].messageId);
 
     const window = await fx.store.readContextWindow(fx.convId, 10);

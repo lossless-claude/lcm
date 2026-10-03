@@ -8,12 +8,12 @@ import { summarizerAvailability } from "./provider-config.js";
 import { createNextSummarizeJobHandler, createAnswerSummarizeJobHandler, createPoolSummarizeJobHandler } from "./routes/summarize-jobs.js";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { lstat, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
-import type { Dirent } from "node:fs";
+import { statSync, type Dirent, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import type { DaemonConfig } from "./config.js";
-import { readProjectMetaIn } from "./project-meta.js";
+import { projectMetaPathIn, readProjectMetaIn, type ProjectMeta } from "./project-meta.js";
 import { sanitizeError } from "./safe-error.js";
 import { readAuthToken } from "./auth.js";
 import type { ProxyManager } from "./proxy-manager.js";
@@ -354,10 +354,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   });
 }
 
-// A store with tens of thousands of projects walks that many directories per pass;
-// yielding this often keeps any one stretch of synchronous work (each project's
-// `meta.json` read) short enough that the event loop never visibly blocks.
-const SCAN_YIELD_EVERY = 50;
+// Bound each slice of synchronous metadata work; one filesystem operation can overrun it.
+const SCAN_YIELD_BUDGET_MS = 10;
 
 /** One file's identity for change detection: not its content, just enough to notice it moved. */
 type FileFingerprint = { name: string; size: number; mtimeMs: number };
@@ -482,6 +480,35 @@ async function writeScanFingerprints(projectPath: string, fingerprints: Map<stri
 /** True while a pass of `scanForTranscripts` is running. */
 let scanInProgress = false;
 
+const scanProjectMetadata = new Map<string, { fingerprint: string; missing: boolean; meta: ProjectMeta | null }>();
+
+function metadataFingerprint(file: Stats): string {
+  return `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}:${file.ctimeMs}`;
+}
+
+/** One unreadable or vanished project directory is skipped; it must not end the pass. */
+function readScanProjectMeta(projectPath: string): ProjectMeta | null {
+  try { return readCachedScanProjectMeta(projectPath); } catch { return null; }
+}
+
+function readCachedScanProjectMeta(projectPath: string): ProjectMeta | null {
+  const cached = scanProjectMetadata.get(projectPath);
+  if (cached?.missing && cached.fingerprint === metadataFingerprint(statSync(projectPath))) return null;
+  let fingerprint: string;
+  let missing = false;
+  try {
+    fingerprint = metadataFingerprint(statSync(projectMetaPathIn(projectPath)));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    fingerprint = metadataFingerprint(statSync(projectPath));
+    missing = true;
+  }
+  if (cached?.missing === missing && cached.fingerprint === fingerprint) return cached.meta;
+  const meta = missing ? null : readProjectMetaIn(projectPath);
+  scanProjectMetadata.set(projectPath, { fingerprint, missing, meta });
+  return meta;
+}
+
 /**
  * One pass of the periodic transcript scan: for every project with stored
  * memory, ingests the Claude Code transcripts under
@@ -492,11 +519,10 @@ let scanInProgress = false;
  * pass and the next scheduled tick never run concurrently.
  *
  * Directory listings are read with `fs/promises`, an async syscall, instead of
- * blocking the event loop; a directory that cannot hold transcripts (no
- * `meta.json` cwd, or no matching Claude project directory) is skipped on that
- * one failed read rather than probed first. The per-project `meta.json` read
- * stays synchronous (one small file), so the outer walk also yields to the
- * event loop every `SCAN_YIELD_EVERY` projects, as `backfillProjectIdentities` does.
+ * blocking the event loop. Projects without a recorded cwd or a matching Claude
+ * project directory are skipped. Project records are cached by file
+ * identity and timestamps; an absent record is cached by directory identity and
+ * timestamps. The outer walk yields after `SCAN_YIELD_BUDGET_MS` of elapsed work.
  * The inner walk yields between transcripts in the same project.
  * A vanished cwd skips capture without settling any fingerprint. Skipped candidates
  * are counted in one debug entry per pass and retried when the cwd returns.
@@ -516,6 +542,7 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
   if (scanInProgress) return;
   scanInProgress = true;
   const seenTranscriptPaths = new Set<string>();
+  const seenProjectDirs = new Set<string>();
   let missingCwdSessions = 0;
   try {
     const projectsDir = paths.projectsDir;
@@ -524,13 +551,17 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
       throw err;
     });
 
-    let seen = 0;
+    let sliceStarted = performance.now();
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      if (++seen % SCAN_YIELD_EVERY === 0) await yieldToEventLoop();
+      if (performance.now() - sliceStarted >= SCAN_YIELD_BUDGET_MS) {
+        await yieldToEventLoop();
+        sliceStarted = performance.now();
+      }
 
       const projectPath = join(projectsDir, entry.name);
-      const meta = readProjectMetaIn(projectPath);
+      seenProjectDirs.add(projectPath);
+      const meta = readScanProjectMeta(projectPath);
       if (!meta?.cwd) continue;
       const codexRetries = stalledSubagentGuards(meta.cwd, paths).filter(({ failure }) =>
         failure.client === "codex" && failure.terminal && failure.recoveryRuleVersion !== CODEX_RECOVERY_RULE_VERSION);
@@ -609,6 +640,9 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
       if (persistedChanged) await writeScanFingerprints(projectPath, persistedFingerprints).catch(() => {});
     }
 
+    for (const path of scanProjectMetadata.keys()) {
+      if (!seenProjectDirs.has(path)) scanProjectMetadata.delete(path);
+    }
     for (const path of transcriptFingerprints.keys()) {
       if (!seenTranscriptPaths.has(path)) transcriptFingerprints.delete(path);
     }

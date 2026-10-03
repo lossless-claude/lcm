@@ -5,7 +5,8 @@
  */
 
 import type { OmpSessionMeta, ParsedOmpTranscriptRecord } from "./omp-transcript.js";
-import { decodeOmpTranscriptUtf8, parseOmpTranscriptRecord, selectOmpLiveMessages } from "./omp-transcript.js";
+import { decodeOmpTranscriptUtf8, parseOmpTranscriptRecord, selectOmpLiveMessages, selectOmpLiveSegments } from "./omp-transcript.js";
+import type { TranscriptToolCall } from "./tool-calls.js";
 import type { ParsedMessage } from "./transcript.js";
 import { readJsonlTranscriptDelta, type JsonlTranscriptCursor, type ReadJsonlTranscriptDeltaOptions } from "./jsonl-transcript-reader.js";
 
@@ -14,6 +15,7 @@ export const OMP_FINGERPRINT_VERSION = "omp-transcript-prefix-v1";
 export type OmpTranscriptCursor = JsonlTranscriptCursor;
 export type ReadOmpTranscriptDeltaOptions = ReadJsonlTranscriptDeltaOptions;
 export type OmpTranscriptDelta = {
+  toolCalls: TranscriptToolCall[];
   messages: ParsedMessage[];
   cursor: OmpTranscriptCursor;
   resumed: boolean;
@@ -28,6 +30,7 @@ const ompFormat = {
   decodeUtf8: decodeOmpTranscriptUtf8,
   parseRecord: (record: string): ParsedOmpTranscriptRecord => parseOmpTranscriptRecord(record),
   selectMessages: selectOmpLiveMessages,
+  selectToolCalls: (records: readonly ParsedOmpTranscriptRecord[]) => selectOmpLiveSegments(records).toolCalls,
 };
 
 /**

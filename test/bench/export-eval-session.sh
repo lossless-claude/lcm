@@ -13,10 +13,18 @@ if ! [[ "$cid" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 mkdir -p "$(dirname "$out")"
-sqlite3 -json "file:${db}?immutable=1" \
-  "select seq, role, content, token_count as tokenCount, created_at as createdAt
-   from messages where conversation_id = ${cid} order by seq" > "$out"
-# sqlite3 -json prints nothing (not []) for zero rows; leaving the empty file
+sqlite3 "file:${db}?immutable=1" \
+  "select json_group_array(json_object(
+     'seq', m.seq, 'role', m.role, 'content', m.content,
+     'tokenCount', m.token_count, 'createdAt', m.created_at,
+     'toolCalls', json((select json_group_array(json_object(
+       'callId', t.call_id, 'name', t.name, 'input', t.input,
+       'outcome', t.outcome, 'blockReason', t.block_reason,
+       'truncated', json(case when t.truncated <> 0 then 'true' else 'false' end)
+     )) from (select * from transcript_tool_calls where message_id = m.message_id order by rowid) t))
+   )) from (select * from messages where conversation_id = ${cid} order by seq) m
+   having count(*) > 0" > "$out"
+# The query prints nothing (not []) for zero rows; leaving the empty file
 # behind would break loadCorpusDir later with an opaque JSON parse error.
 if ! [[ -s "$out" ]]; then
   echo "no messages for conversation_id $cid" >&2

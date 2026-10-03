@@ -1,4 +1,6 @@
 import type { SessionClient } from "../session-client.js";
+import type { SummaryCutDiagnostic } from "./summary-rejection.js";
+import type { ToolSummaryContext } from "../tool-summary-context.js";
 
 export type SummarizerProvider =
   | "claude-process"
@@ -49,6 +51,8 @@ export type SummarizerUsage = {
 };
 
 export type SummarizeContext = {
+  /** Error→fix pairs and block reasons derived from this leaf's source messages. */
+  toolContext?: ToolSummaryContext;
   /** Operator directions supplied with a compaction request. */
   customInstructions?: string;
   /** An expired compaction must not enqueue or publish another attempt. */
@@ -69,6 +73,8 @@ export type SummarizeContext = {
   /** The preceding chunk's summary, rendered into the prompt so chunks read as one thread. */
   previousSummary?: string;
   onUsage?: (usage: SummarizerUsage) => void;
+  /** One content-free measurement per cut answer, including answers without usage. */
+  onCut?: (diagnostic: SummaryCutDiagnostic) => void;
   /**
    * A chain link is about to run: its name (the usage label it reports under), how it
    * reaches its model, and the model it is configured with. Fires even for a link whose

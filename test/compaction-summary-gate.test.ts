@@ -19,7 +19,7 @@ const CONFIG: CompactionConfig = {
 /** Enough 1,200-token messages for several leaf chunks and a condensed pass over them. */
 const MESSAGE_COUNT = 6;
 
-/** Every table a compaction pass writes: a rejected pass must leave all of them as they were. */
+/** Every table a failed compaction pass must leave unchanged. */
 const WRITTEN_TABLES = ["context_items", "summaries", "summary_messages", "summary_parents", "messages", "message_parts"];
 
 const dbs: DatabaseSync[] = [];
@@ -117,9 +117,8 @@ describe("CompactionEngine summary gate", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM summaries").get()).toEqual({ n: 0 });
   });
 
-  it("a cut-off OpenAI-compatible answer stores nothing, however readable its text", async () => {
-    const { snapshot, compact } = await conversationWithMessages();
-    const before = snapshot();
+  it("cut-off OpenAI-compatible answers recover from the source, never from rejected text", async () => {
+    const { db, compact } = await conversationWithMessages();
     const create = async () => ({
       choices: [{ finish_reason: "length", message: { content: "Chronology and main decisions:\nThe agent" } }],
       usage: { prompt_tokens: 15_000, completion_tokens: 1_024, total_tokens: 16_024 },
@@ -129,15 +128,18 @@ describe("CompactionEngine summary gate", () => {
       _clientOverride: { chat: { completions: { create } } }, _retryDelayMs: 0,
     });
 
-    await expect(compact(summarize)).rejects.toMatchObject({ name: "SummaryRejectedError", reason: "length" });
+    const result = await compact(summarize);
 
-    expect(snapshot()).toEqual(before);
+    expect(result).toMatchObject({ actionTaken: true, level: "fallback" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM summaries WHERE content LIKE '%Chronology and main decisions%'").get())
+      .toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM summary_messages").get()).toEqual({ n: MESSAGE_COUNT });
   });
 
-  it("an adapter's rejection propagates unchanged and is never replaced by a fallback summary", async () => {
+  it("an adapter's whitespace rejection propagates unchanged instead of using a fallback", async () => {
     const { snapshot, compact } = await conversationWithMessages();
     const before = snapshot();
-    const rejection = new SummaryRejectedError({ reason: "length", provider: "openai", model: "reasoner" });
+    const rejection = new SummaryRejectedError({ reason: "whitespace", provider: "openai", model: "reasoner" });
 
     await expect(compact(async () => { throw rejection; })).rejects.toBe(rejection);
 

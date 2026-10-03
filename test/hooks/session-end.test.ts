@@ -77,30 +77,20 @@ describe("handleSessionEnd", () => {
     expect(client.post).toHaveBeenCalledWith(
       "/session-end",
       { session_id: "s1", cwd: "/tmp", transcript_path: "/tmp/t.jsonl" },
-      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+      expect.objectContaining({ signal: expect.any(AbortSignal), onSubmitted: expect.any(Function) }),
     );
   });
 
-  it("acknowledgement deadline fits the host's SessionEnd budget", async () => {
-    const client = createMockClient();
-    await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, paths, 3737);
-    const timeoutMs = client.post.mock.calls[0][2].timeoutMs as number;
-    // Strictly under the ~1.5s host budget: the health probe before the post eats into it too.
-    expect(timeoutMs).toBeLessThan(1500);
-    expect(timeoutMs).toBeLessThanOrEqual(1000);
-  });
-
-  it("never spawns a daemon", async () => {
+  it("posts directly without probing health or spawning a daemon", async () => {
     await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), createMockClient(), paths, 3737);
-    expect(ensureDaemon).toHaveBeenCalledWith(expect.objectContaining({ noSpawn: true, spawnTimeoutMs: 0 }));
+    expect(ensureDaemon).not.toHaveBeenCalled();
   });
 
-  it("exits 0 without posting when no daemon is up", async () => {
-    vi.mocked(ensureDaemon).mockResolvedValueOnce({ connected: false } as any);
-    const client = createMockClient();
+  it("exits 0 when the connection is refused", async () => {
+    const client = { post: vi.fn().mockRejectedValue(new TypeError("connect ECONNREFUSED")) } as any;
     const result = await handleSessionEnd(JSON.stringify({ session_id: "s1", cwd: "/tmp" }), client, paths, 3737);
     expect(result.exitCode).toBe(0);
-    expect(client.post).not.toHaveBeenCalled();
+    expect(client.post).toHaveBeenCalledTimes(1);
   });
 
   it("exits 0 when the daemon rejects or times out, and logs the failure", async () => {

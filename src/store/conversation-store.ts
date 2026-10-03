@@ -2,7 +2,8 @@ import { SUMMARY_SOURCE_IDS_SQL } from "./summary-lineage.js";
 import { TIMELINE_SESSION_ID } from "../db/project-timeline.js";
 import { WorkerStore } from "./worker-store.js";
 import { CommitStore } from "./commit-store.js";
-import type { DatabaseSync } from "node:sqlite";
+import { ToolLessonStore } from "../promotion/tool-lessons.js";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { parseSqliteDate } from "../db/sqlite-date.js";
 import { createHash, randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
@@ -16,7 +17,14 @@ import {
 import { buildLikeSearchPlan, createFallbackSnippet } from "./full-text-fallback.js";
 import { validateRegex } from "./regex-safety.js";
 
+/** Search includes scrubbed call inputs while the stored message content stays unchanged. */
+const MESSAGE_SEARCH_CONTENT_SQL = `content || COALESCE((
+  SELECT char(10) || group_concat(input, char(10)) FROM transcript_tool_calls
+  WHERE message_id = messages.message_id
+), '')`;
+
 const memoryDatabaseIds = new WeakMap<DatabaseSync, string>();
+const messageColumnsByConnection = new WeakMap<DatabaseSync, Set<string>>();
 
 export type ConversationId = number;
 export type MessageId = number;
@@ -233,6 +241,7 @@ const NOT_COMPACTION_EVENT = `NOT EXISTS (
 
 export class ConversationStore {
   private readonly fts5Available: boolean;
+  private messageByIdStatement?: StatementSync;
 
   constructor(
     private db: DatabaseSync,
@@ -250,15 +259,27 @@ export class ConversationStore {
     return new CommitStore(this.db).forSession(sessionId);
   }
 
+  getToolLessonsForMessages(messageIds: readonly number[]) {
+    return new ToolLessonStore(this.db).forMessages(messageIds);
+  }
+
   /** Read-only callers may open a store before its next schema migration. */
+  private messageColumns(): Set<string> {
+    let columns = messageColumnsByConnection.get(this.db);
+    if (!columns) {
+      const rows = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+      columns = new Set(rows.map(column => column.name));
+      messageColumnsByConnection.set(this.db, columns);
+    }
+    return columns;
+  }
+
   private eventTimeColumn(alias = ""): string {
-    const columns = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
-    return columns.some(column => column.name === "event_at") ? `${alias}event_at` : "NULL";
+    return this.messageColumns().has("event_at") ? `${alias}event_at` : "NULL";
   }
 
   private eventSourceColumn(alias = ""): string {
-    const columns = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
-    return columns.some(column => column.name === "event_time_source") ? `${alias}event_time_source` : "NULL";
+    return this.messageColumns().has("event_time_source") ? `${alias}event_time_source` : "NULL";
   }
 
   /** Source bounds are requested separately so ordinary conversation reads never scan messages. */
@@ -466,7 +487,10 @@ export class ConversationStore {
       ON CONFLICT(session_id) DO UPDATE SET rev = rev + 1, dirty = 1, bumped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`) : undefined;
     const hasFts = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").get() !== undefined;
     const removeFts = hasFts ? this.db.prepare("DELETE FROM messages_fts WHERE rowid = ?") : undefined;
-    const addFts = hasFts ? this.db.prepare("INSERT INTO messages_fts(rowid, content) VALUES (?, ?)") : undefined;
+    // Re-index with the message's stored call inputs, as capture indexes them.
+    const addFts = hasFts ? this.db.prepare(`INSERT INTO messages_fts(rowid, content) SELECT ?, ? || COALESCE((
+      SELECT char(10) || group_concat(input, char(10)) FROM transcript_tool_calls WHERE message_id = ?
+    ), '')`) : undefined;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const row of rows) {
@@ -475,7 +499,7 @@ export class ConversationStore {
         }
         markDirty?.run(row.messageId);
         removeFts?.run(row.messageId);
-        addFts?.run(row.messageId, row.content);
+        addFts?.run(row.messageId, row.content, row.messageId);
       }
       this.db.exec("COMMIT");
       return rows.length;
@@ -689,12 +713,11 @@ export class ConversationStore {
   }
 
   getMessageByIdSync(messageId: MessageId): MessageRecord | null {
-    const row = this.db
-      .prepare(
+    this.messageByIdStatement ??= this.db.prepare(
         `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at, ${this.eventSourceColumn()} AS event_time_source
        FROM messages WHERE message_id = ?`,
-      )
-      .get(messageId) as unknown as MessageRow | undefined;
+    );
+    const row = this.messageByIdStatement.get(messageId) as unknown as MessageRow | undefined;
     return row ? toMessageRecord(row) : null;
   }
 
@@ -892,7 +915,7 @@ export class ConversationStore {
     before?: Date,
     summaryId?: string,
   ): MessageSearchResult[] {
-    const plan = likePlanForPreparedQuery("content", prepared);
+    const plan = likePlanForPreparedQuery(MESSAGE_SEARCH_CONTENT_SQL, prepared);
     if (plan.terms.length === 0) {
       return [];
     }
@@ -919,7 +942,7 @@ export class ConversationStore {
 
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at, ${this.eventSourceColumn()} AS event_time_source
+        `SELECT message_id, conversation_id, seq, role, ${MESSAGE_SEARCH_CONTENT_SQL} AS content, token_count, created_at, ${this.eventTimeColumn()} AS event_at, ${this.eventSourceColumn()} AS event_time_source
          FROM messages
          WHERE ${where.join(" AND ")}
          ORDER BY created_at DESC
@@ -945,7 +968,7 @@ export class ConversationStore {
     before?: Date,
     summaryId?: string,
   ): MessageSearchResult[] {
-    const plan = buildLikeSearchPlan("content", query);
+    const plan = buildLikeSearchPlan(MESSAGE_SEARCH_CONTENT_SQL, query);
     if (plan.terms.length === 0) {
       return [];
     }
@@ -973,7 +996,7 @@ export class ConversationStore {
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at, ${this.eventSourceColumn()} AS event_time_source
+        `SELECT message_id, conversation_id, seq, role, ${MESSAGE_SEARCH_CONTENT_SQL} AS content, token_count, created_at, ${this.eventTimeColumn()} AS event_at, ${this.eventSourceColumn()} AS event_time_source
          FROM messages
          ${whereClause}
          ORDER BY created_at DESC
@@ -1023,7 +1046,7 @@ export class ConversationStore {
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const rows = this.db
       .prepare(
-        `SELECT message_id, conversation_id, seq, role, content, token_count, created_at, ${this.eventTimeColumn()} AS event_at, ${this.eventSourceColumn()} AS event_time_source
+        `SELECT message_id, conversation_id, seq, role, ${MESSAGE_SEARCH_CONTENT_SQL} AS content, token_count, created_at, ${this.eventTimeColumn()} AS event_at, ${this.eventSourceColumn()} AS event_time_source
          FROM messages
          ${whereClause}
          ORDER BY created_at DESC`,
