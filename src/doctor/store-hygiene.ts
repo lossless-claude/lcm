@@ -136,7 +136,7 @@ export function checkStaleProjectStores(paths: LcmPaths, verbose = false): Check
   if (stale.length || unchecked.length) lines.push("     Preview cleanup: lcm doctor --cleanup-stale-projects --dry-run");
   return {
     name: "stale-project-stores", category: "Storage",
-    status: stale.length || unchecked.length || missingCwds ? "warn" : "pass",
+    status: stale.length || unchecked.length ? "warn" : "pass",
     message: `${stale.length} stale project stores (missing temporary or test directories)` + (lines.length ? `\n${lines.join("\n")}` : ""),
   };
 }

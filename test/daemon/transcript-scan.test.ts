@@ -25,7 +25,7 @@ import * as projectQueue from "../../src/daemon/project-queue.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync), statSync: vi.fn(actual.statSync) };
 });
 
 // The sweep derives the Claude projects root from `homedir()`. Point it at a
@@ -132,6 +132,44 @@ describe("periodic transcript scan", () => {
     await scanForTranscripts(config, paths, ingest);
     expect(reads.mock.calls.filter(([path]) => String(path).endsWith("/meta.json"))).toHaveLength(0);
     expect(ingest).not.toHaveBeenCalled();
+  });
+
+  it("skips a project whose record cannot be checked and still scans the others", async () => {
+    // Whichever project the walk visits first is denied; the other must still be captured.
+    const projects = ["denied-or-scanned-a", "denied-or-scanned-b"].map(name => {
+      const cwd = join(process.env.LCM_SCAN_FAKE_HOME!, name);
+      mkdirSync(cwd, { recursive: true });
+      const entry = join(paths.projectsDir, name);
+      mkdirSync(entry, { recursive: true });
+      writeFileSync(join(entry, "meta.json"), JSON.stringify({ cwd }));
+      const claudeDir = join(process.env.LCM_SCAN_FAKE_HOME!, ".claude", "projects", claudeProjectSlug(cwd));
+      mkdirSync(claudeDir, { recursive: true });
+      writeFileSync(join(claudeDir, `${name}.jsonl`), `${JSON.stringify({ message: { role: "user", content: "scan fixture" } })}\n`);
+      return cwd;
+    });
+    const stats = vi.mocked(statSync);
+    const realStat = stats.getMockImplementation()!;
+    let denied: string | undefined;
+    stats.mockImplementation(((path: string, ...rest: unknown[]) => {
+      if (!denied && String(path).endsWith("/meta.json") && projects.some(cwd => String(path).includes(cwd.split("/").pop()!))) {
+        denied = String(path);
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      }
+      return (realStat as (...args: unknown[]) => unknown)(path, ...rest);
+    }) as typeof statSync);
+    const captured: string[] = [];
+    const ingest: RouteHandler = async (_req, res, body) => {
+      captured.push(JSON.parse(body).cwd);
+      res.writeHead(200);
+      res.end("{}");
+    };
+    try {
+      const config = loadDaemonConfig("/nonexistent", { llm: { provider: "disabled" } }, {});
+      await scanForTranscripts(config, paths, ingest);
+    } finally { stats.mockImplementation(realStat); }
+    expect(denied).toBeDefined();
+    const other = projects.find(cwd => !denied!.includes(cwd.split("/").pop()!))!;
+    expect(captured).toContain(other);
   });
 
   it.each(["edited", "created"])("refreshes metadata when its record is %s", async (change) => {

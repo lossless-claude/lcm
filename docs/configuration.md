@@ -95,7 +95,8 @@ Both the daemon and the client must see the same value: a daemon started without
 `lcm doctor` counts project directories without a `meta.json` file and directories
 whose recorded absolute cwd no longer exists, including ordinary missing
 checkouts. Corrupt or unreadable records are not counted as missing files.
-These counts are read-only; cleanup remains an explicit operator action.
+These counts are read-only and do not change the check's status; cleanup remains an
+explicit operator action.
 
 `lcm doctor` reports stores whose recorded working directory no longer exists and
 was under a system temporary directory (under its path or its resolved real path,

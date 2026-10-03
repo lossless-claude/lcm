@@ -483,7 +483,12 @@ function metadataFingerprint(file: Stats): string {
   return `${file.dev}:${file.ino}:${file.size}:${file.mtimeMs}:${file.ctimeMs}`;
 }
 
+/** One unreadable or vanished project directory is skipped; it must not end the pass. */
 function readScanProjectMeta(projectPath: string): ProjectMeta | null {
+  try { return readCachedScanProjectMeta(projectPath); } catch { return null; }
+}
+
+function readCachedScanProjectMeta(projectPath: string): ProjectMeta | null {
   const cached = scanProjectMetadata.get(projectPath);
   if (cached?.missing && cached.fingerprint === metadataFingerprint(statSync(projectPath))) return null;
   let fingerprint: string;

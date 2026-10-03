@@ -102,6 +102,20 @@ it("doctor counts missing metadata and all missing working directories without c
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
+it("doctor counts a missing ordinary checkout without warning about it", async () => {
+  const home = mkdtempSync(join(tmpdir(), "lcm-project-record-doctor-missing-"));
+  const paths = createLcmPaths(home);
+  try {
+    // An ordinary checkout may be on an unmounted disk: it is counted, not treated as stale.
+    const dir = join(paths.projectsDir, "a".repeat(64));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({ cwd: "/workspace/lcm-doctor-unmounted-checkout" }));
+    const result = (await runDoctor(minimalDeps({ lcmHome: home }))).find(r => r.name === "stale-project-stores");
+    expect(result?.status).toBe("pass");
+    expect(result?.message).toContain("1 project directories with missing cwd");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
 it("doctor reports zero missing project records and working directories in an empty store", async () => {
   const home = mkdtempSync(join(tmpdir(), "lcm-project-record-doctor-empty-"));
   try {

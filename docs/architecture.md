@@ -408,6 +408,7 @@ Project metadata reads are cached in memory by `meta.json` file identity, size a
 modification/change timestamps. Missing records are remembered by the project
 directory's identity and timestamps until that directory changes. Unchanged
 passes do not read `meta.json`; removed project directories leave the cache.
+A directory whose record cannot be checked is skipped for that pass without ending it.
 The project walk yields after 10 ms of elapsed work, rather than a fixed directory
 count, and yields between transcripts within a project. A single synchronous
 metadata operation can exceed that budget; the scan yields before the next directory.
