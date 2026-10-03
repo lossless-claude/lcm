@@ -335,8 +335,10 @@ export function describeUnansweredDaemon(port: number, logsDir: string): string 
   return `lcm daemon did not answer on port ${port} within 10s — check ${join(logsDir, "daemon.log")} and ${join(logsDir, "daemon.stderr")}`;
 }
 
-/** A silent listener must not hold a hook on undici's multi-minute headers timeout. */
+/** Connect-only callers get one short probe without a spawn budget. */
 export const HEALTH_PROBE_TIMEOUT_MS = 500;
+/** Standalone CLI health checks wait out ordinary daemon work, but remain bounded. */
+export const DEFAULT_HEALTH_TIMEOUT_MS = 5_000;
 
 type HealthProbe = { health: HealthResponse | null; notAnswering: boolean };
 
@@ -362,7 +364,7 @@ async function probeDaemonHealth(
         timer = setTimeout(() => {
           resolve({ health: null, notAnswering: true });
           controller.abort();
-        }, Math.max(0, Math.min(HEALTH_PROBE_TIMEOUT_MS, timeoutMs)));
+        }, Math.max(0, timeoutMs));
       }),
     ]);
   } finally {
@@ -373,7 +375,7 @@ async function probeDaemonHealth(
 export async function checkDaemonHealth(
   port: number,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
-  timeoutMs = HEALTH_PROBE_TIMEOUT_MS,
+  timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS,
 ): Promise<HealthResponse | null> {
   return (await probeDaemonHealth(port, fetchFn, timeoutMs)).health;
 }
@@ -561,8 +563,8 @@ export async function ensureDaemon(opts: EnsureDaemonOptions): Promise<EnsureDae
 
 /**
  * Stop the daemon recorded in the PID file. Resolves true when the daemon is
- * confirmed down (health no longer answers), false when it is still up after
- * the timeout. A missing or dead PID with no daemon answering counts as stopped.
+ * confirmed down, false when it is still up or a listener has not answered by
+ * the timeout. A health timeout never establishes that the listener is gone.
  */
 export async function stopDaemon(opts: {
   port: number;
@@ -571,6 +573,8 @@ export async function stopDaemon(opts: {
   _fetchOverride?: typeof globalThis.fetch;
 }): Promise<{ stopped: boolean; pid?: number }> {
   const fetchFn = opts._fetchOverride ?? globalThis.fetch;
+  const deadline = Date.now() + (opts.timeoutMs ?? 5000);
+  const remaining = () => Math.max(0, deadline - Date.now());
   // Read startup registrations before daemon.pid: a child hands off by writing
   // daemon.pid before removing its registration, so neither state can be missed.
   // A child registering after this snapshot sees the hold published by the caller.
@@ -583,33 +587,33 @@ export async function stopDaemon(opts: {
     } catch { /* ignore */ }
   }
   if (pid === undefined || !isProcessAlive(pid)) {
-    const health = await checkDaemonHealth(opts.port, fetchFn);
-    // Daemons from older builds report no pid; fall back to whoever listens on the port.
-    pid = health?.pid ?? (health ? findListenerPid(opts.port) : undefined) ?? pid;
+    const probe = await probeDaemonHealth(opts.port, fetchFn, remaining());
+    // A busy daemon and older builds may report no pid; use the port's listener.
+    pid = probe.health?.pid ?? ((probe.health || probe.notAnswering) ? findListenerPid(opts.port) : undefined) ?? pid;
   }
   if (pid !== undefined && isProcessAlive(pid)) {
     try { process.kill(pid, "SIGTERM"); } catch { /* checked below */ }
   }
-  const deadline = Date.now() + (opts.timeoutMs ?? 5000);
-  while (Date.now() < deadline) {
+  while (remaining()) {
     // Startup registrations are only waited on, never signalled: a stale
     // registration could refer to a PID the OS has since reused.
     const startingAlive = starting.some((entry) => existsSync(entry.path) && isProcessAlive(entry.pid));
     const alive = (pid !== undefined && isProcessAlive(pid)) || startingAlive;
-    const health = await checkDaemonHealth(opts.port, fetchFn);
+    const probe = await probeDaemonHealth(opts.port, fetchFn, remaining());
+    const health = probe.health;
     // A registered child may have handed off after our initial PID read.
     if (health?.pid !== undefined && health.pid !== pid) {
       pid = health.pid;
       try { process.kill(pid, "SIGTERM"); } catch { /* checked on the next iteration */ }
     }
-    if (!alive && !health) {
+    if (!alive && !health && !probe.notAnswering) {
       cleanStalePid(opts.pidFilePath);
       for (const entry of starting) {
         try { unlinkSync(entry.path); } catch { /* child already removed it */ }
       }
       return { stopped: true, pid };
     }
-    await sleep(200);
+    await sleep(Math.min(200, remaining()));
   }
   return { stopped: false, pid };
 }

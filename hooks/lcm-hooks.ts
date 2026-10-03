@@ -274,6 +274,7 @@ const DAEMON_START_COOLDOWN_MS = 60_000;
 const DAEMON_START_TIMEOUT_MS = 15_000;
 const HEALTH_PROBE_TIMEOUT_MS = 500;
 const DAEMON_POST_TIMEOUT_MS = 5_000;
+const RESTORE_TIMEOUT_MS = 10_000;
 /** The daemon's summary-job long poll holds for up to 25 seconds. */
 const SUMMARY_POLL_TIMEOUT_MS = 30_000;
 let warnedBusyDaemon = false;
@@ -373,7 +374,7 @@ async function postOnce($: EngineInterface, route: string, body: unknown): Promi
       method: "POST",
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
-    }, DAEMON_POST_TIMEOUT_MS);
+    }, route === "/restore" ? RESTORE_TIMEOUT_MS : DAEMON_POST_TIMEOUT_MS);
   } catch (error) {
     if (isDaemonUnreachableError(error, startedAt)) return { body: null, connectionFailed: true };
     // A timed-out or dropped call may still complete. The next Stop snapshot or scan

@@ -24,7 +24,8 @@ async function harness(failure: Error) {
     vi.fn(async () => ({ result: "ok" })));
   const completeTurn = () => handlers.get("turn.complete")!(engine, {}, vi.fn(async () => ({ done: true })));
   const start = () => handlers.get("session.start")!(engine, {}, vi.fn(async () => ({})));
-  return { engine, fire, completeTurn, start };
+  const restoreContext = () => handlers.get("prompt.context")!(engine, {}, vi.fn(async () => ({ blocks: [] })));
+  return { engine, fire, completeTurn, start, restoreContext };
 }
 
 /** A scripted answer: an HTTP status, or a failure that arrives after `afterMs`. */
@@ -112,6 +113,40 @@ describe("function-hook daemon transport failures", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(engine.ui.log).toHaveBeenCalledOnce();
     expect(engine.process.run).toHaveBeenCalledTimes(1);
+  }, 2_000);
+
+  it("restores context that arrives after five seconds within the ten-second restore budget", async () => {
+    vi.useFakeTimers();
+    const { engine, restoreContext } = await harness(new Error("unused"));
+    engine.http.fetch.mockReset().mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve({ ok: true, status: 200, text: JSON.stringify({ context: "restored memory" }) }), 8_000);
+    }));
+    engine.clock.sleep.mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    let result: unknown;
+    void restoreContext().then((value: unknown) => { result = value; });
+    await vi.advanceTimersByTimeAsync(7_999);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toEqual({ blocks: [{ name: "lcm", text: "restored memory" }] });
+    expect(engine.http.fetch).toHaveBeenCalledOnce();
+    expect(engine.process.run).toHaveBeenCalledTimes(1);
+    expect(engine.ui.log).not.toHaveBeenCalled();
+  }, 2_000);
+
+  it("fails open after ten seconds when the module restore never answers", async () => {
+    vi.useFakeTimers();
+    const { engine, restoreContext } = await harness(new Error("unused"));
+    engine.http.fetch.mockReset().mockImplementation(() => new Promise(() => {}));
+    engine.clock.sleep.mockImplementation((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    let result: unknown;
+    void restoreContext().then((value: unknown) => { result = value; });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toEqual({ blocks: [] });
+    expect(engine.http.fetch).toHaveBeenCalledOnce();
+    expect(engine.process.run).toHaveBeenCalledTimes(1);
+    expect(engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("daemon busy"));
   }, 2_000);
 
   it.each([
