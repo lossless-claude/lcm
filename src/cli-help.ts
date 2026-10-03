@@ -263,15 +263,17 @@ const HELP: Record<string, CommandHelp> = {
 
   stats: {
     summary: "Show memory inventory: message counts, compression ratios, and summary statistics.",
-    usage: "lcm stats [-v] [--pool [--json]]",
+    usage: "lcm stats [-v] [--warning-backtest | --pool [--json]]",
     options: [
       ["-v, --verbose", "Show per-conversation breakdown"],
       ["--pool", "Show connection pool statistics from the daemon"],
       ["--json", "Output structured JSON (use with --pool)"],
+      ["--warning-backtest", "Offline environment-warning backtest for the current project; scans stored calls, warnings stay off"],
     ],
     examples: [
       ["lcm stats", "Summary view across all projects"],
       ["lcm stats -v", "Per-conversation detail"],
+      ["lcm stats --warning-backtest", "Measure matches, precision, coverage and would-be context cost (no daemon or model)"],
       ["lcm stats --pool --json", "Connection pool statistics as JSON"],
     ],
   },
