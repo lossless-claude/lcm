@@ -415,8 +415,9 @@ export class SessionCapture {
     if (newMessages.length === 0) return [];
     const storedCount = await this.conversationStore.getMessageCount(conversationId);
     const inputs: CreateMessageInput[] = newMessages.map((m, i) => {
-      const prepared = scrubbed.get(m);
-      if (!prepared) throw new Error("Session history changed while preparing capture");
+      // A history that shrank after the pre-transaction pass leaves messages unprepared.
+      let prepared = scrubbed.get(m);
+      if (!prepared) scrubbed.set(m, prepared = this.scrubMessage(m));
       totalCounts.gitleaks += prepared.counts.gitleaks;
       totalCounts.builtIn += prepared.counts.builtIn;
       totalCounts.global += prepared.counts.global;
@@ -453,6 +454,15 @@ export class SessionCapture {
       scrubbed.set(message, { content, parts, counts });
     }
     return scrubbed;
+  }
+
+  /** The synchronous form, for a message the pre-transaction pass did not prepare. */
+  private scrubMessage(message: ParsedMessage): ScrubbedMessage {
+    const counts: RedactionCounts = { gitleaks: 0, builtIn: 0, global: 0, project: 0 };
+    const content = normalizeMessageContent(this.scrubCounted(message.content, counts));
+    const parts = (message.parts ?? []).map(part =>
+      typeof part.args === "string" ? { ...part, args: this.scrubCounted(part.args, counts) } : part);
+    return { content, parts, counts };
   }
 
   /** Every text capture persists goes through here, so its matches are counted with the rest. */

@@ -71,3 +71,23 @@ it.each([
   expect(JSON.stringify(messages)).toBe(original);
   expect(observed.yields.mock.calls.length).toBeGreaterThan(1);
 });
+
+it("scrubs inline when the stored history shrank after the pre-transaction pass", async () => {
+  const db = new DatabaseSync(":memory:");
+  runLcmMigrations(db);
+  try {
+    const scrubber = new ScrubEngine(["ZQX-GLOBAL-\\d+"], []);
+    const capture = new SessionCapture(db, "fixture", scrubber);
+    const store = (capture as unknown as { conversationStore: { getSessionMessageCount(id: string): Promise<number> } }).conversationStore;
+    // The pass before the transaction sees both messages as stored; the transaction sees none.
+    vi.spyOn(store, "getSessionMessageCount").mockResolvedValueOnce(2);
+    const messages: ParsedMessage[] = [
+      { role: "user", content: "ZQX-GLOBAL-1", tokenCount: 1 },
+      { role: "assistant", content: "ok", tokenCount: 1, parts: [{ type: "command", name: "/c", args: "ZQX-GLOBAL-2" }] },
+    ];
+    const result = await capture.write({ sessionId: "shrunk", messages });
+    expect(result.records.map(record => record.content)).toEqual(["[REDACTED]", "ok"]);
+    expect(db.prepare("SELECT tool_input FROM message_parts").all()).toEqual([{ tool_input: "[REDACTED]" }]);
+    expect(result.totalCounts.global).toBe(2);
+  } finally { db.close(); }
+});
