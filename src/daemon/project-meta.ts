@@ -71,7 +71,7 @@ export const readProjectMetaIn = (projectDir: string): ProjectMeta | null =>
 
 /** Recovery reads regular metadata files only, without following a file link. */
 export function readProjectMetaInNoLinks(projectDir: string): ProjectMeta | null {
-  const path = metaPathIn(projectDir);
+  const path = projectMetaPathIn(projectDir);
   try {
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink()) return null;
