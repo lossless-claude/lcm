@@ -27,7 +27,11 @@ export function openMigrated(dbPath: string): DatabaseSync {
   return db;
 }
 
-/** Current promoted stores need no migration sweep on the prompt read path. */
+/**
+ * Opens a store for the promoted read path, skipping the migration sweep when the store
+ * already has the newest schema that path reads (`recall_usage`). A migration that changes
+ * what promoted search or recall feedback reads must extend this check to its own marker.
+ */
 export function openPromotedRead(dbPath: string): DatabaseSync {
   const db = getLcmConnection(dbPath, { readOnly: true });
   try {
