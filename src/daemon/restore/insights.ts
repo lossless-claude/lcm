@@ -42,11 +42,14 @@ const SESSION_START_RULES = 3;
 /** A rule line names a command shape, never a command. */
 const RULE_SHAPE_MAX_CHARS = 120;
 
+export function formatEnvironmentRule(fullShape: string, sessionCount: number, lastSeen: string): string {
+  const shape = fullShape.length > RULE_SHAPE_MAX_CHARS ? `${fullShape.slice(0, RULE_SHAPE_MAX_CHARS)}…` : fullShape;
+  return `Environment rule: \`${shape}\` failed or was blocked in ${sessionCount} sessions, with no success since (last ${lastSeen.slice(0, 10)}).`;
+}
+
 function lessonInsight(lesson: ToolLesson): Insight {
   const sessionCount = Object.keys(lesson.sessionCounts).length;
-  const fullShape = lesson.shape ?? "";
-  const shape = fullShape.length > RULE_SHAPE_MAX_CHARS ? `${fullShape.slice(0, RULE_SHAPE_MAX_CHARS)}…` : fullShape;
-  const content = `Environment rule: \`${shape}\` failed or was blocked in ${sessionCount} sessions, with no success since (last ${lesson.lastSeen.slice(0, 10)}).`;
+  const content = formatEnvironmentRule(lesson.shape ?? "", sessionCount, lesson.lastSeen);
   return { content, tags: lesson.tags,
     count: lesson.count, sessionCount, firstSeen: lesson.firstSeen, lastSeen: lesson.lastSeen };
 }

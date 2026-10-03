@@ -3,7 +3,7 @@ import { yieldToEventLoop } from "../daemon/project-queue.js";
 import type { StoredCall, ToolLesson } from "./tool-lessons.js";
 
 export const BATCH_SIZE = 128;
-const ENVIRONMENT_SESSION_THRESHOLD = 3;
+export const ENVIRONMENT_SESSION_THRESHOLD = 3;
 
 function callOrder(call: StoredCall): string {
   return call.seen + String(call.message_id).padStart(16, "0") + String(call.row_id).padStart(16, "0");
