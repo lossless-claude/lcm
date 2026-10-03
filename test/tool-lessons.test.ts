@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { readInsights } from "../src/daemon/restore/insights.js";
@@ -12,6 +12,18 @@ it("forms command shapes with sorted flags and placeholders for paths and values
     .toBe("git diff --output --stat <args>");
   expect(commandShape("npm install widget --registry=https://example.test --save"))
     .toBe("npm install --registry --save <args>");
+});
+
+it.each([
+  ["mysql -psecret -uadmin", "mysql -p -u <args>"],
+  ["mysql -psecret", "mysql -p <args>"],
+  ['["mysql","-uadmin"]', "mysql -u <args>"],
+  ["rm -rf /tmp/cache", "rm -rf <args>"],
+  ["mysql -rf", "mysql -r <args>"],
+  ["rm -rfsecret", "rm -r <args>"],
+  ["mysql -psecret=value", "mysql -p <args>"],
+])("keeps only known value-free short clusters in %s", (command, shape) => {
+  expect(commandShape(command)).toBe(shape);
 });
 
 let db: DatabaseSync, lessons: ToolLessonStore, callOrdinal: number;
@@ -31,9 +43,193 @@ function storedCall(session: string, command: string, outcome: string, options: 
   const conversation = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = ?").get(session)!;
   const message = db.prepare("INSERT INTO messages (conversation_id, seq, role, content, token_count, event_at) VALUES (?, ?, 'tool', 'fixture', 1, ?)")
     .run(conversation.conversation_id, ++callOrdinal, options.at ?? "2026-01-01T00:00:00Z");
-  db.prepare("INSERT INTO transcript_tool_calls (session_id, call_id, message_id, name, input, outcome, block_reason, truncated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+  const call = db.prepare("INSERT INTO transcript_tool_calls (session_id, call_id, message_id, name, input, outcome, block_reason, truncated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
     .run(session, String(callOrdinal), message.lastInsertRowid, options.name ?? "Bash", command, outcome, options.reason ?? null, options.truncated ?? 0);
+  return Number(call.lastInsertRowid);
 }
+
+function rebuiltSnapshot() {
+  const rebuilt = new DatabaseSync(":memory:");
+  runLcmMigrations(rebuilt);
+  for (const table of ["conversations", "messages", "transcript_tool_calls"]) {
+    for (const row of db.prepare(`SELECT * FROM ${table}`).all()) {
+      const columns = Object.keys(row);
+      rebuilt.prepare(`INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+        .run(...Object.values(row));
+    }
+  }
+  return { db: rebuilt, store: new ToolLessonStore(rebuilt) };
+}
+
+it("matches a full rebuild through adds, resolutions, corrections and removals", async () => {
+  const first = storedCall("one", "npm install old", "unknown");
+  storedCall("one", "npm install new", "succeeded", { at: "2026-01-03T00:00:00Z" });
+  const blocked = storedCall("two", "git status", "blocked", { reason: "Blocked: /tmp/a" });
+  storedCall("three", "git status", "failed");
+  const fourth = storedCall("four", "git status", "failed");
+  const assertRebuild = async () => {
+    const fresh = rebuiltSnapshot();
+    try {
+      const expectedPairs = await fresh.store.refresh("project");
+      const actualPairs = await lessons.refresh("project");
+      expect(actualPairs).toBe(expectedPairs);
+      expect(lessons.list({ includeRetired: true })).toEqual(fresh.store.list({ includeRetired: true }));
+    } finally { fresh.db.close(); }
+  };
+  await assertRebuild();
+  db.prepare("UPDATE transcript_tool_calls SET outcome = 'failed' WHERE rowid = ?").run(first);
+  await assertRebuild();
+  db.prepare("UPDATE transcript_tool_calls SET block_reason = 'Blocked: permission' WHERE rowid = ?").run(blocked);
+  await assertRebuild();
+  storedCall("one", "Read", "unknown", { name: "Read" });
+  await assertRebuild();
+  storedCall("success", "git status", "succeeded", { at: "2026-01-05T00:00:00Z" });
+  await assertRebuild();
+  db.prepare("DELETE FROM transcript_tool_calls WHERE rowid = ?").run(fourth);
+  await assertRebuild();
+  db.prepare("DELETE FROM transcript_tool_calls WHERE session_id = 'success'").run();
+  await assertRebuild();
+});
+
+it("bounds refresh work by changed calls and their pair windows", async () => {
+  for (let index = 0; index < 400; index++) {
+    storedCall("large-session", "git status", "blocked", { reason: "Blocked: permission" });
+    storedCall("unrelated-" + index, `fixturetool${index} old`, "failed");
+    storedCall("unrelated-" + index, `fixturetool${index} new`, "succeeded");
+  }
+  await lessons.refresh("project");
+  const prepare = db.prepare.bind(db);
+  let callsRead = 0, lessonsWritten = 0;
+  const spy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+    const statement = prepare(sql);
+    if (/SELECT/i.test(sql) && /FROM transcript_tool_calls/i.test(sql)) {
+      const all = statement.all.bind(statement);
+      const get = statement.get.bind(statement);
+      statement.all = (...args) => { const rows = all(...args); callsRead += rows.length; return rows; };
+      statement.get = (...args) => { const row = get(...args); if (row) callsRead++; return row; };
+    }
+    if (/INSERT.*INTO tool_lessons/i.test(sql)) {
+      const run = statement.run.bind(statement);
+      statement.run = (...args) => { lessonsWritten++; return run(...args); };
+    }
+    return statement;
+  });
+  try {
+    storedCall("large-session", "git status", "blocked", { reason: "Blocked: permission" });
+    await new ToolLessonStore(db).refresh("project");
+    expect(callsRead).toBeLessThanOrEqual(1 + 20 + 20 * 20);
+    expect(lessonsWritten).toBeLessThanOrEqual(2);
+    callsRead = 0;
+    await new ToolLessonStore(db).refresh("project");
+    expect(callsRead).toBe(0);
+  } finally { spy.mockRestore(); }
+});
+
+it("re-derives only the removed call's session, including a newly shortened pair window", async () => {
+  storedCall("affected", "npm install old", "failed");
+  const removed = storedCall("affected", "Read", "unknown", { name: "Read" });
+  for (let index = 0; index < 19; index++) storedCall("affected", "Read", "unknown", { name: "Read" });
+  storedCall("affected", "npm install new", "succeeded");
+  for (let index = 0; index < 100; index++) storedCall("unrelated", "git status", "failed");
+  await lessons.refresh("project");
+  expect(lessons.list({ kind: "error-fix" })).toEqual([]);
+  db.prepare("DELETE FROM transcript_tool_calls WHERE rowid = ?").run(removed);
+  const prepare = db.prepare.bind(db);
+  const readSessions = new Set<string>();
+  const spy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+    const statement = prepare(sql);
+    if (/SELECT/i.test(sql) && /FROM transcript_tool_calls/i.test(sql)) {
+      const all = statement.all.bind(statement), get = statement.get.bind(statement);
+      statement.all = (...args) => {
+        const rows = all(...args);
+        for (const row of rows) if (typeof row.session_id === "string") readSessions.add(row.session_id);
+        return rows;
+      };
+      statement.get = (...args) => {
+        const row = get(...args);
+        if (typeof row?.session_id === "string") readSessions.add(row.session_id);
+        return row;
+      };
+    }
+    return statement;
+  });
+  try {
+    await new ToolLessonStore(db).refresh("project");
+    expect(readSessions).toEqual(new Set(["affected"]));
+    expect(lessons.list({ kind: "error-fix" })).toEqual([expect.objectContaining({ count: 1 })]);
+  } finally { spy.mockRestore(); }
+});
+
+it("resumes interrupted publication without exposing partial lesson updates", async () => {
+  storedCall("one", "git status", "blocked", { reason: "Blocked: /tmp/a" });
+  await lessons.refresh("project");
+  const published = lessons.list({ includeRetired: true });
+  storedCall("two", "git status", "blocked", { reason: "Blocked: /tmp/b" });
+  const prepare = db.prepare.bind(db);
+  const spy = vi.spyOn(db, "prepare").mockImplementation((sql: string) => {
+    const statement = prepare(sql);
+    if (/INSERT OR REPLACE INTO tool_lessons/.test(sql)) {
+      statement.run = () => { throw new Error("publication interrupted"); };
+    }
+    return statement;
+  });
+  try {
+    await expect(lessons.refresh("project")).rejects.toThrow("publication interrupted");
+    expect(lessons.list({ includeRetired: true })).toEqual(published);
+  } finally { spy.mockRestore(); }
+  await new ToolLessonStore(db).refresh("project");
+  expect(lessons.list({ kind: "block-reason" })).toEqual([expect.objectContaining({ count: 2, sessionCounts: { one: 1, two: 1 } })]);
+});
+
+it("recomputes retirement after a timestamp repair and worker exclusion", async () => {
+  for (const session of ["one", "two", "three"]) storedCall(session, "git status", "failed", { at: "2026-01-02T00:00:00Z" });
+  const success = storedCall("success", "git status", "succeeded", { at: "2026-01-03T00:00:00Z" });
+  await lessons.refresh("project");
+  expect(lessons.list()).toEqual([]);
+  db.prepare("UPDATE messages SET event_at = '2026-01-01T00:00:00Z' WHERE message_id = (SELECT message_id FROM transcript_tool_calls WHERE rowid = ?)").run(success);
+  await lessons.refresh("project");
+  expect(lessons.list()).toEqual([expect.objectContaining({ retired: false })]);
+  db.prepare("INSERT INTO summarize_workers (session_id, cwd, client, state) VALUES ('three', '/project', 'claude', 'active')").run();
+  await lessons.refresh("project");
+  expect(lessons.list({ includeRetired: true })).toEqual([]);
+});
+
+it("rebuilds an older snapshot once and removes shapes with attached values", async () => {
+  for (const session of ["one", "two", "three"]) storedCall(session, "mysql -psecret", "failed");
+  await lessons.refresh("project");
+  const legacy = { ...lessons.list()[0], shape: "mysql -psecret" };
+  db.prepare("UPDATE tool_lessons SET lesson_key = ?, data = ?").run(JSON.stringify(["environment-rule", legacy.shape]), JSON.stringify(legacy));
+  const artifacts = db.prepare("SELECT type, name FROM sqlite_master WHERE name GLOB 'tool_lesson_*' AND name <> 'tool_lesson_state' ORDER BY type DESC").all();
+  for (const artifact of artifacts) {
+    if (artifact.type === "trigger" || artifact.type === "table") db.exec(`DROP ${String(artifact.type)} ${String(artifact.name)}`);
+  }
+  runLcmMigrations(db);
+  await new ToolLessonStore(db).refresh("project");
+  expect(lessons.list()).toEqual([expect.objectContaining({ shape: "mysql -p <args>", count: 3 })]);
+  runLcmMigrations(db);
+  expect(await lessons.refresh("project")).toBe(0);
+});
+
+it("drops rows an interrupted older publish left outside the published generation", async () => {
+  for (const session of ["one", "two", "three"]) storedCall(session, "make build", "failed");
+  await lessons.refresh("project");
+  const { generation } = db.prepare("SELECT generation FROM tool_lesson_state").get() as { generation: number };
+  const [published] = lessons.list();
+  const orphan = (shape: string, at: number) => db.prepare("INSERT INTO tool_lessons (generation, lesson_key, kind, retired, last_seen, data) VALUES (?, ?, 'environment-rule', 0, ?, ?)")
+    .run(at, JSON.stringify(["environment-rule", shape]), published.lastSeen, JSON.stringify({ ...published, shape }));
+  orphan("make below", generation - 1);
+  orphan("make above", generation + 1);
+  const artifacts = db.prepare("SELECT type, name FROM sqlite_master WHERE name GLOB 'tool_lesson_*' AND name <> 'tool_lesson_state' ORDER BY type DESC").all();
+  for (const artifact of artifacts) {
+    if (artifact.type === "trigger" || artifact.type === "table") db.exec(`DROP ${String(artifact.type)} ${String(artifact.name)}`);
+  }
+  runLcmMigrations(db);
+  expect(db.prepare("SELECT count(*) AS n FROM tool_lessons WHERE generation <> ?").get(generation)!.n).toBe(0);
+  await new ToolLessonStore(db).refresh("project");
+  storedCall("four", "make build", "failed");
+  await new ToolLessonStore(db).refresh("project");
+  expect(lessons.list().map(lesson => lesson.shape)).toEqual([published.shape]);
+});
 
 it("derives project-scoped error→fix pairs from succeeded shell calls of the same shape", async () => {
   storedCall("session", "npm install old-package", "failed");

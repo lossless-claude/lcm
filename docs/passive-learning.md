@@ -73,7 +73,12 @@ its capture time. Declared summarize-worker sessions are excluded.
 - **Command shape**: the executable's basename and a recognized subcommand, followed
   by sorted, unique flags. Positional paths and values, including attached flag
   values, collapse to `<args>`. For example, `git diff --stat src/a.ts` becomes
-  `git diff --stat <args>`. Common command families such as git, npm, pip, cargo,
+  `git diff --stat <args>`. A short token longer than one flag letter retains
+  only its first letter and a value placeholder: `mysql -psecret -uadmin` becomes
+  `mysql -p -u <args>`. The exception is a known value-free cluster: for `rm`,
+  combinations of `d f i P R r v W` retain their letters, such as `-rf`.
+  The same token on another executable receives a placeholder; no attached
+  value text is retained. Common command families such as git, npm, pip, cargo,
   docker and gh retain their first subcommand. Other executables retain their
   executable and flags. Quoted words and stored argument arrays are supported.
   Compound shell commands, substitutions, shell wrappers and truncated inputs
@@ -102,10 +107,21 @@ evidence of a successful command.
 Lessons live in `tool_lessons` in the main project database, separate from promoted
 memory. `/promote-events` refreshes them at capture/promotion boundaries, including
 when no sidecar events are pending, and skips the refresh when no stored call was
-added, removed or resolved since the published snapshot. It reads, derives, writes and prunes snapshots
-in batches of at most 128 calls or lessons, yielding to the event loop between
-batches. The project mutation lease serializes refreshes. Readers see the previous
-complete snapshot until a single generation switch publishes the next one.
+changed since the published snapshot. A transactional change journal records
+added and resolved calls, input or block-reason corrections, and message-time
+repairs. Refresh reads those calls and their bounded 20-call pairing windows,
+updates their persisted contributions and counts, and publishes only affected
+lesson keys. A removed call invalidates and re-derives its session, including
+pairs whose window shortened; other sessions are retained. Worker exclusion
+also invalidates the affected session. Indexed evidence supplies first and last
+dates and environment-rule retirement without a project scan.
+The first refresh after upgrading an older snapshot re-derives existing calls once.
+Refresh processes pages of at most 128 changed calls or lessons and yields to the
+event loop between pages. The project mutation lease serializes refreshes;
+ordinary refresh work depends on changed evidence and its pairing windows,
+while deletion depends on the affected session. Readers see the previous complete
+snapshot until a single generation switch publishes updated lesson versions.
+Persisted journal and publication state allow an interrupted refresh to resume.
 Immediate per-tool callers set `skip_tool_lessons: true`; they do no project lesson
 scan. Restore reads at most three active environment rules from the published
 snapshot and never derives them on the SessionStart path.
@@ -165,6 +181,8 @@ When a pattern crosses the reinforcement threshold, `reinforcementBoost` is adde
 - **Tool lesson snapshots**: `tool_lessons` and `tool_lesson_state` in the main project database
   - Derived from scrubbed stored calls; no model or confidence scoring
   - Published by generation; active environment rules are surfaced during restore
+  - Internal change journals, per-call contributions, counts and success evidence
+    support incremental refresh; unchanged lesson versions remain published
   - These are derived observations, outside promoted-memory search and deduplication
 
 - **Error log**: `error_log` table in each sidecar DB
