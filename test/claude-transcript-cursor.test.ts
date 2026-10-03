@@ -76,7 +76,11 @@ it("recovers declarations before an older parser's byte cursor", async () => {
 it("parses only the append after reopening the database and forgetting the prefix memo", async () => {
   const { input, capture } = fixture();
   writeFileSync(io.path, Array.from({ length: 128 }, (_, i) => line(`turn ${i} ${"x".repeat(1_500)}`)).join(""));
+  // The setup turns hold no secrets; the gitleaks rules over 192 KB cost seconds, and far more under a loaded suite.
+  const setupScrub = vi.spyOn(ScrubEngine.prototype, "scrubWithCounts")
+    .mockImplementation(text => ({ text, gitleaks: 0, builtIn: 0, global: 0, project: 0 }));
   const first = await capture.captureTranscript(input);
+  setupScrub.mockRestore();
   const event = await capture.conversationStore.createMessage({ conversationId: first!.conversationId, seq: 128, role: "system", content: "compacted", tokenCount: 1 });
   await capture.conversationStore.createMessageParts(event.messageId, [{ sessionId: "session", partType: "compaction", ordinal: 0 }]);
   const append = line("next turn");
@@ -93,7 +97,7 @@ it("parses only the append after reopening the database and forgetting the prefi
   expect(parsed.mock.calls.length).toBeLessThan(16);
   expect(rows).not.toHaveBeenCalled();
   expect(db.prepare("SELECT message_count FROM codex_ingest_cursors").get()).toEqual({ message_count: 129 });
-}, 15_000);
+});
 
 it("parses only new records for repeated captures in the same process", async () => {
   const { input, capture } = fixture();
