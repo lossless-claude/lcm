@@ -877,8 +877,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       }, paths, log);
       reply(200, result);
     } catch (err) {
-      if (deadlineReplied || err instanceof CompactionDeadlineError) return;
+      if (err instanceof CompactionDeadlineError) return;
       log.write("error", "compact.failed", { cwd, session_id, err });
+      if (deadlineReplied) return;
       if (captureRequired) {
         if (captureOutcomeForError?.status !== "completed") {
           log.write("error", "precompact.capture_failed", { cwd, session_id, err });
