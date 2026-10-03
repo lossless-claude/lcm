@@ -94,7 +94,7 @@ Both the daemon and the client must see the same value: a daemon started without
 
 `lcm doctor` counts project directories without a `meta.json` file and directories
 whose recorded absolute cwd no longer exists, including ordinary missing
-checkouts. Cwd checks run asynchronously with a 100 ms deadline per stat and at
+checkouts. Cwd checks run asynchronously with a 1 s deadline per stat and at
 most four outstanding stats. A timed-out stat keeps its concurrency slot: if all
 slots time out, remaining cwds are left unchecked. Doctor reports timed-out,
 unattempted and unreadable cwds separately from missing cwds, warns about them,

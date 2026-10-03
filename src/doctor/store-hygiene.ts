@@ -126,7 +126,8 @@ function staleProjectStores(paths: LcmPaths, cwdErrors?: Map<string, NodeJS.Errn
   return { stale, unchecked, recordless, missingMeta, missingCwds };
 }
 
-export const CWD_CHECK_DEADLINE_MS = 100;
+// Long enough for a local stat on a heavily loaded machine; short enough to bound an unreachable mount.
+export const CWD_CHECK_DEADLINE_MS = 1000;
 export const CWD_CHECK_CONCURRENCY = 4;
 type CwdStat = (cwd: string) => Promise<unknown>;
 
