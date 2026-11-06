@@ -7,11 +7,6 @@ on:
       - release
   pull_request:
   workflow_dispatch:
-    inputs:
-      hosted:
-        description: Use GitHub-hosted Linux when the Mac mini is unavailable
-        type: boolean
-        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -22,8 +17,7 @@ permissions:
 
 jobs:
   ci:
-    # Fork code stays off the persistent host. Keep one stable required check.
-    runs-on: ${{ fromJSON((inputs.hosted || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64","lcm"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       LCM_SKIP_CACHE_SYNC: "1"
@@ -54,11 +48,15 @@ jobs:
         run: npm ci
 
       - name: Install ripgrep (bench baseline)
-        if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
 
       - name: Verify ripgrep
         run: rg --version
+
+      - name: Install the claude CLI
+        # Pinned: a new CLI can add checks and turn the required check red with
+        # no change in this repository. See docs/ci-runner.md.
+        run: npm install -g @anthropic-ai/claude-code@2.1.318
 
       - name: Type-check
         run: npm run typecheck
@@ -78,21 +76,12 @@ jobs:
         run: npm run check-agents
 
       - name: Validate plugin manifest
-        # Two invocations, because they validate different things: the repo root
-        # holds both manifests and marketplace.json wins there, so the plugin's
-        # own agents, skills, commands and hooks are only walked when plugin.json
-        # is named. --strict on that walk would fail on one structural warning:
-        # CLAUDE.md at the root is this repo's project-instruction file, not
-        # plugin context, and this repo is both a project and a plugin. Errors
-        # still fail without it — that walk is what caught four agents whose
-        # frontmatter never parsed. Fork runners have no `claude`, so a missing
-        # binary skips loudly rather than going red. See docs/ci-runner.md.
+        # Each manifest is named, because --strict applies only to the marketplace.
+        # On the plugin walk it would fail on one structural warning: CLAUDE.md at
+        # the root is this repo's project-instruction file, not plugin context, and
+        # this repo is both a project and a plugin. See docs/ci-runner.md.
         run: |
-          if ! command -v claude >/dev/null 2>&1; then
-            echo "::warning title=plugin validate skipped::claude CLI not on PATH on this runner; the plugin and marketplace manifests were not structurally validated this run (see docs/ci-runner.md)"
-            exit 0
-          fi
-          claude plugin validate --strict .
+          claude plugin validate --strict .claude-plugin/marketplace.json
           claude plugin validate .claude-plugin/plugin.json
 
       - name: Run tests

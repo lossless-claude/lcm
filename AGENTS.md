@@ -12,7 +12,7 @@ This file routes; it does not repeat what the sources say. Read [CONTEXT.md](CON
 | env vars, `config.json`, the summarizer | [docs/configuration.md](docs/configuration.md) | `src/db/config.ts`, `src/daemon/config.ts` |
 | MCP tools and their parameters | [docs/agent-tools.md](docs/agent-tools.md) | `src/mcp/tool-catalog.ts` |
 | cutting a release | [docs/releasing.md](docs/releasing.md) | `.github/workflows/publish.yml`, `.github/workflows/version-pr.yml` |
-| CI, the self-hosted runner | [docs/ci-runner.md](docs/ci-runner.md) | `.github/workflows/ci.yml` |
+| CI | [docs/ci-runner.md](docs/ci-runner.md) | `.github/workflows/ci.yml` |
 
 A change that alters what one of these documents states updates the document in the same PR.
 

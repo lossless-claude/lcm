@@ -50,7 +50,7 @@ const GATE_TIMEOUT_MS = 120_000;
  * from the workload under test rises with the regression it exists to catch.
  *
  * `CONTENTION_IDLE_MS` is the fastest of several samples on an idle M4, this repository's
- * development machine and the CI runner's hardware (docs/ci-runner.md). A slower machine — idle
+ * development machine. A slower machine — idle
  * or busy — reads as contention and gets a proportionally larger budget; an order-of-magnitude
  * search regression still fails it, and the budget never drops below `P95_LATENCY_MS`.
  */
