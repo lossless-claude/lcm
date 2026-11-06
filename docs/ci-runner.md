@@ -1,16 +1,14 @@
-# CI on the Mac mini
+# CI
 
-The `ci` job targets the repository-scoped runner `mac-mini-m4-lcm`, with labels
-`self-hosted`, `macOS`, `ARM64`, and `lcm`. Its launchd service and working
-directory are separate from dwigt's runner on the same host. Node 22 is provisioned by
-`actions/setup-node`; ripgrep must be available on the service's saved PATH
-(Homebrew installs it in `/opt/homebrew/bin`).
+The `ci` job runs on GitHub-hosted `ubuntu-latest` for every event. Node 22 is
+provisioned by `actions/setup-node`; the job installs ripgrep with `apt-get` and a
+pinned `claude` CLI with `npm`.
 
 The job retains the `ci` check name and runs dependency installation, typecheck,
 build, tests, and workspace-artifact checks. Superseded runs for the same ref are
 cancelled, and each run has a 30-minute timeout.
 
-The host also runs other work, so CI time is not idle time. Each unit test gets 20 s
+CI machines are shared, so CI time is not idle time. Each unit test gets 20 s
 (`testTimeout` in `vitest.config.ts`) instead of vitest's 5 s default. Setup-heavy tests
 that take 1–3 s on an idle machine otherwise time out under load, which fails the run
 without a defect in the code.
@@ -21,31 +19,24 @@ The step runs `claude plugin validate` twice, because the two invocations
 validate different things:
 
 ```sh
-claude plugin validate --strict .
+claude plugin validate --strict .claude-plugin/marketplace.json
 claude plugin validate .claude-plugin/plugin.json
 ```
 
-The `.claude-plugin/` directory holds both `marketplace.json` and `plugin.json`, and the
-marketplace manifest wins when that directory is resolved from `.` — so the first call checks
-only that manifest, strictly: unrecognized fields, missing metadata, and other issues the
-runtime tolerates. The plugin's own agents, skills, commands and hooks module are walked
-only when `plugin.json` is named, which is what the second call does.
+The first call checks only the marketplace manifest, strictly: unrecognized fields,
+missing metadata, and other issues the runtime tolerates. The plugin's own agents,
+skills, commands and hooks module are walked when `plugin.json` is named, which is what
+the second call does. Both are named because `--strict .` walks the plugin as well as
+the marketplace, and so fails on the warning below.
 
 That second call is deliberately **not** `--strict`. Under `--strict` it fails
 on one structural warning — that root `CLAUDE.md` is not loaded as plugin
 context — which is true and not worth acting on: this repository is both a
-project and a plugin, and `CLAUDE.md` is its project-instruction file. Errors
-still fail the step without `--strict`, and errors are what matter here: this
-walk is what found four `agents/*.md` files whose YAML frontmatter had never
-parsed, so each of those agents had been loading with every field but the
-filename-derived name silently dropped.
+project and a plugin, and `CLAUDE.md` is its project-instruction file.
 
-Both calls need the `claude` CLI, which a fork PR's GitHub-hosted Linux box does
-not have. The step therefore checks `command -v claude` first and, when absent,
-prints a `::warning::` annotation and exits `0` rather than failing red — loud,
-not silent. On the self-hosted Mac mini the binary is on the saved runner PATH
-(`~/actions-runner-lcm/.path` includes `~/.local/bin`); if that file is ever
-regenerated, re-add that entry or the step goes quiet on every run.
+The CLI version is pinned in `.github/workflows/ci.yml`, because a new version can add
+checks and turn the required `ci` check red with no change in this repository. Raise
+the pin in its own pull request.
 
 What this step does **not** do: it does not know whether a given
 `$.noun.method(...)` call still exists on any particular Claude Code build. See
@@ -54,45 +45,16 @@ replace `npm run typecheck:hooks`.
 
 ## Isolation
 
-Fork pull requests run on GitHub-hosted Linux. Same-repository branches execute
-on the persistent Mac mini and must be trusted. The service uses the
-host's existing runner account; a temporary HOME is filesystem hygiene, not a
-security sandbox or a separate operating-system identity.
+Every run gets a fresh GitHub-hosted machine, so fork and same-repository pull requests
+run the same way and nothing carries over between runs.
 
-Checkout cleans the job workspace and does not persist its GitHub token. Build
-and tests use HOME and temporary directories under `runner.temp`, and plugin
-cache synchronization is disabled. This keeps test databases, Codex/Claude
-fixtures, npm data, and build hooks away from the interactive LCM installation.
+Checkout does not persist its GitHub token. Build and tests use HOME and temporary
+directories under `runner.temp`, and plugin cache synchronization is disabled.
 
-A temporary HOME does not isolate the loopback: the interactive daemon listens
-on the default port, and a test process that resolves that port can probe it,
-SIGTERM it or spawn over it. The test harness closes that on every machine, not
-only this one: `test/setup-env.ts` gives each test file its own HOME and an lcm
+A temporary HOME does not isolate the loopback: a test process that resolves the
+daemon's default port can probe it, SIGTERM it or spawn over it. The test harness closes
+that on every machine: `test/setup-env.ts` gives each test file its own HOME and an lcm
 home whose `config.json` names another port, and `test/setup-port-guard.mjs`
 refuses the default port (`LCM_TEST_GUARDED_PORTS`) in every Node process the
 suite runs, logging each refusal under `LCM_TEST_GUARD_DIR` and failing the test
 file that made it. `test/port-guard.test.ts` holds both in place.
-
-## Operations
-
-The LCM instance lives in `~/actions-runner-lcm`. Use its own `svc.sh` to inspect
-or restart it; do not reconfigure or stop dwigt's instance. Runner credentials
-stay outside this repository. A fresh registration requires a short-lived token
-from this repository and the additional `lcm` label. Verify the service's `.path`
-contains `/opt/homebrew/bin` (ripgrep) and `~/.local/bin` (the `claude` CLI, for
-the plugin-manifest step) before starting it.
-
-```sh
-gh api repos/lossless-claude/lcm/actions/runners \
-  --jq '.runners[] | {name, status, labels: [.labels[].name]}'
-```
-
-If the host is unavailable, manually run the same job on GitHub-hosted Linux:
-
-```sh
-gh workflow run ci.yml --ref <branch> -f hosted=true
-```
-
-The runner choice changes within the same job, so the required `ci` check cannot
-pass merely because a separate self-hosted job was skipped. The dispatch entry
-becomes available after this workflow reaches the default branch.

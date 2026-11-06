@@ -18,7 +18,7 @@ export default defineConfig({
           include: ["test/**/*.test.ts"],
           exclude: ["test/e2e/**", "node_modules/**", ".claude/**"],
           setupFiles: ["./test/setup-dist.ts", "./test/setup-env.ts"],
-          // The self-hosted runner shares its machine: setup-heavy tests that take 1–3 s
+          // CI machines are shared: setup-heavy tests that take 1–3 s
           // idle exceed vitest's 5 s default under load. A real hang still fails.
           testTimeout: 20_000,
         },
