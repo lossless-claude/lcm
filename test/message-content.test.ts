@@ -40,6 +40,18 @@ describe("compareStoredMessageContent with tokenade's cold-resume placeholders",
     expect(compare(output(400), fold(400), identity)).toBe("elided");
   });
 
+  it("scrubs no stored original that already holds the text around each placeholder as scrubbed today", () => {
+    const scrubbed: string[] = [];
+    const scrub = (text: string) => { scrubbed.push(text); return scrubKeys(text); };
+    const original = `key [REDACTED]\n${output(400)}\ndone`;
+    expect(compare(original, `key sk-abc\n${fold(400)}\ndone`, scrub)).toBe("elided");
+    expect(scrubbed).not.toContain(original);
+  });
+
+  it("still matches a stored original that was captured before today's rules redacted it", () => {
+    expect(compare(`key sk-abc\n${output(400)}\ndone`, `key sk-abc\n${fold(400)}\ndone`, scrubKeys)).toBe("elided");
+  });
+
   it("tries no placeholder in a row the parser did not find folded", () => {
     expect(compareStoredMessageContent(output(400), fold(400), identity)).toBeUndefined();
     expect(compareStoredMessageContent(`tokenade writes:\n${output(40)}`, `tokenade writes:\n${fold(40)}`, identity)).toBeUndefined();

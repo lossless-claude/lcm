@@ -39,14 +39,19 @@ export function compareStoredMessageContent(
   if (stored === current || stored === normalizeMessageContent(current)) return "full";
   const currentNow = normalizeMessageContent(scrub(current));
   if (stored === currentNow) return "full";
+  const fold = elided ? current.search(TOKENADE_FOLDS) : -1;
+  const nul = current.indexOf("\u0000");
+  const cutBeforeFold = nul !== -1 && (fold === -1 || nul < fold);
+  // A folded row's stored original is the large text tokenade hid. When it already holds the text
+  // around each placeholder as scrubbed today, it is what capture stores now and needs no scrub
+  // itself; only a stored row redacted under other rules falls through to `storedNow`.
+  if (fold !== -1 && !cutBeforeFold && matchesUnderElision(stored, current, scrub)) return "elided";
   const storedNow = normalizeMessageContent(scrub(stored));
   if (storedNow === currentNow) return "full";
-  const fold = elided ? current.search(TOKENADE_FOLDS) : -1;
   // A cut row is checked before the redaction allowance: a redaction marker can absorb the
   // text after the NUL, which would pass a cut row off as whole and leave it unrepaired. Text
   // cut before the first placeholder holds none for a marker to stand for.
-  const nul = current.indexOf("\u0000");
-  if (nul !== -1 && (fold === -1 || nul < fold)) {
+  if (cutBeforeFold) {
     const prefix = normalizeMessageContent(scrub(current.slice(0, nul)));
     if (storedNow === prefix || matchesUnderRedaction(storedNow, prefix)) return "cut";
   }
