@@ -168,7 +168,7 @@ export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): Lcm
       let proc: ChildProcessWithoutNullStreams;
       try {
         // Directory creation happens here, inside the spawn error path.
-        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt, emptyPluginDir()), { stdio: ["pipe", "pipe", "pipe"] });
+        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt, emptyPluginDir()), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       } catch (error) {
         reject(normalizeSpawnError(error));
         return;
