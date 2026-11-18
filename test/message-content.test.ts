@@ -16,6 +16,13 @@ describe("compareStoredMessageContent", () => {
   it("keeps the removed-pattern allowance for text without a NUL", () => {
     expect(compareStoredMessageContent("token [REDACTED] end", "token abc123 end", (text) => text)).toBe("full");
   });
+
+  it("scrubs only the transcript row when the stored row is what capture stores from it", () => {
+    const scrubbed: string[] = [];
+    const scrub = (text: string) => { scrubbed.push(text); return scrubKeys(text); };
+    expect(compareStoredMessageContent("key [REDACTED]�tail", "key sk-abc\u0000tail", scrub)).toBe("full");
+    expect(scrubbed).toEqual(["key sk-abc\u0000tail"]);
+  });
 });
 
 

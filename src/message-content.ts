@@ -34,10 +34,12 @@ export function isTokenadeFold(value: string): boolean {
 export function compareStoredMessageContent(
   stored: string, current: string, scrub: (text: string) => string, elided = false,
 ): "full" | "cut" | "elided" | undefined {
-  // Scrubbing is the expensive part; identical text needs none.
+  // Scrubbing is the expensive part; identical text needs none, and a row exactly as capture
+  // stores `current` today needs only `current` scrubbed.
   if (stored === current || stored === normalizeMessageContent(current)) return "full";
-  const storedNow = normalizeMessageContent(scrub(stored));
   const currentNow = normalizeMessageContent(scrub(current));
+  if (stored === currentNow) return "full";
+  const storedNow = normalizeMessageContent(scrub(stored));
   if (storedNow === currentNow) return "full";
   const fold = elided ? current.search(TOKENADE_FOLDS) : -1;
   // A cut row is checked before the redaction allowance: a redaction marker can absorb the
