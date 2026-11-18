@@ -434,6 +434,24 @@ async function transcriptFingerprint(transcriptPath: string, sessionDir: string)
   return JSON.stringify({ parent, subagents });
 }
 
+/**
+ * True when `current` differs from `recorded` only in the parent transcript's mtime. tokenade
+ * folds a stored tool output by rewriting its line at the same byte length and renaming the file
+ * over the original: a rewrite that keeps the size appends no row, so there is nothing to
+ * capture. Whatever it changed in stored rows is compared by the next read that finds growth.
+ */
+function onlyParentRewritten(current: string, recorded: string | undefined): boolean {
+  if (recorded === undefined) return false;
+  try {
+    const now = JSON.parse(current) as { parent: FileFingerprint; subagents: FileFingerprint[] };
+    const before = JSON.parse(recorded) as Partial<typeof now>;
+    return before.parent?.name === now.parent.name && before.parent.size === now.parent.size &&
+      JSON.stringify(before.subagents) === JSON.stringify(now.subagents);
+  } catch {
+    return false;
+  }
+}
+
 /** The fingerprint recorded after each transcript path's last successful ingest. */
 const transcriptFingerprints = new Map<string, string>();
 /** Failed Claude 400 responses need no second parse until the transcript tree changes. */
@@ -528,7 +546,8 @@ function readCachedScanProjectMeta(projectPath: string): ProjectMeta | null {
  * are counted in one debug entry per pass and retried when the cwd returns.
  *
  * Each session's transcript is skipped when its fingerprint (see
- * `transcriptFingerprint`) matches the one recorded for it, computed before the
+ * `transcriptFingerprint`) matches the one recorded for it, or differs only in the parent
+ * transcript's mtime (`onlyParentRewritten`); a fingerprint is computed before the
  * ingest and recorded only once the ingest resolves without `incomplete`. An unchanged
  * subagent `TranscriptSourceError` is skipped on the next pass, allowing that parent
  * fingerprint to settle; other subagent failures and failed tool-call model backfills
@@ -607,8 +626,9 @@ export async function scanForTranscripts(config: DaemonConfig, paths: LcmPaths, 
         seenProjectPaths.add(transcriptPath);
 
         const fingerprint = await transcriptFingerprint(transcriptPath, join(sessionsDir, sessionId));
-        if (fingerprint !== undefined &&
-            (transcriptFingerprints.get(transcriptPath) === fingerprint || failed400Fingerprints.get(transcriptPath) === fingerprint)) continue;
+        const recorded = transcriptFingerprints.get(transcriptPath);
+        if (fingerprint !== undefined && (recorded === fingerprint || failed400Fingerprints.get(transcriptPath) === fingerprint ||
+            onlyParentRewritten(fingerprint, recorded))) continue;
         failed400Fingerprints.delete(transcriptPath);
 
         try {

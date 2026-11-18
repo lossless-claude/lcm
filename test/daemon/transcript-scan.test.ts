@@ -638,6 +638,23 @@ describe("periodic transcript scan: fingerprint dedup", () => {
     expect(count()).toBe(2);
   });
 
+  it("skips a parent transcript rewritten at the same size, and reads it once it grows", async () => {
+    const config = loadDaemonConfig("/nonexistent");
+    const { handler, count } = countingHandler(createIngestHandler(config, paths));
+    const { transcriptPath } = seedFingerprintProject("folded", transcriptLine("first"));
+
+    await scanForTranscripts(config, paths, handler);
+    // tokenade folds a stored output at its byte length: only the mtime moves.
+    const later = new Date(statSync(transcriptPath).mtimeMs + 60_000);
+    utimesSync(transcriptPath, later, later);
+    await scanForTranscripts(config, paths, handler);
+    expect(count()).toBe(1);
+
+    appendFileSync(transcriptPath, transcriptLine("second"));
+    await scanForTranscripts(config, paths, handler);
+    expect(count()).toBe(2);
+  });
+
   it("re-ingests a session whose parent is unchanged but a subagent transcript grew", async () => {
     const config = loadDaemonConfig("/nonexistent");
     const { handler, count } = countingHandler(createIngestHandler(config, paths));
