@@ -21,6 +21,7 @@ import { compareStoredMessageContent, normalizeMessageContent } from "./message-
 import type { SessionClient } from "./session-client.js";
 import { discoverSubagentTranscripts, type DiscoveredSubagentTranscript } from "./subagent-attribution.js";
 import { parseTranscript, type ParsedMessage, type SessionUrlDeclaration } from "./transcript.js";
+import { expandFoldedMessages, type FoldedRows } from "./tokenade-folds.js";
 
 /**
  * The transcript-source seam: one interface answering "what does this
@@ -80,6 +81,11 @@ export interface ReadContext extends TranscriptLocator {
   eventTimeRepair?: boolean;
   /** Stable identity of the current redaction rules. Without one, prefix validation is not memoized. */
   redactionKey?: string;
+  /**
+   * Restore from tokenade's stash the Claude messages tokenade folded before they were stored
+   * (src/tokenade-folds.ts). Only capture asks: a rebuild or a repair compares the transcript as it is.
+   */
+  expandFolds?: boolean;
 }
 
 /**
@@ -110,6 +116,8 @@ export interface TranscriptDelta {
   restampParserShape?: boolean;
   /** The adapter's resume checkpoint; persisted in the same transaction as the messages it accounts for. Opaque to capture. */
   checkpoint?: unknown;
+  /** With `expandFolds`: the tokenade-folded messages among `messages` restored, and those left as the transcript holds them. */
+  folds?: FoldedRows;
   /** Fills the model on the session's events whose hook payload could not carry one; scans the transcript only when rows wait. */
   backfillModels(events: EventsDb, sessionId: string): void;
 }
@@ -274,20 +282,25 @@ const claudeSource: TranscriptSource = {
         }
       }
     }
+    // Only rows past the validated stored prefix: a stored row is never replaced from the stash.
+    const unstored = delta.resumed ? messages : messages.slice(storedCount);
+    const expanded = ctx.expandFolds ? expandFoldedMessages(unstored, delta.toolCalls, ctx.scrub) : undefined;
+    const fresh = expanded?.messages ?? unstored;
     return {
-      messages: delta.resumed ? messages : messages.slice(storedCount),
+      messages: fresh,
       ...(ctx.requireComplete ? { verification: { verified: validated, complete: delta.complete,
         boundaryFound: Boolean(ctx.captureThroughUuid && delta.recordMatched),
         ...(delta.boundaryScanExceeded ? { boundaryScanExceeded: true } : {}) } } : {}),
       sessionUrlDeclarations: delta.sessionUrlDeclarations,
-      toolCalls: delta.toolCalls,
+      toolCalls: expanded?.toolCalls ?? delta.toolCalls,
+      ...(expanded && expanded.folds.expanded + expanded.folds.kept > 0 ? { folds: expanded.folds } : {}),
       sourceOffset: storedCount,
       restampParserShape,
       // Without a stable redaction identity, the next capture must compare the prefix again.
       checkpoint: validated && ctx.redactionKey !== undefined && (stored || messages.length > 0)
         ? { ...delta.cursor, redactionKey: ctx.redactionKey, toolUseModels: delta.toolUseModels, replaceToolUseModels: !delta.resumed,
             validatedCount: !delta.resumed && stored ? storedCount : delta.cursor.messageCount,
-            pendingFingerprint: !delta.resumed && stored ? capturedFingerprint(messages.slice(storedCount), ctx.scrub) : undefined }
+            pendingFingerprint: !delta.resumed && stored ? capturedFingerprint(fresh, ctx.scrub) : undefined }
         : undefined,
       backfillModels(events, sessionId) {
         if (!events.hasUnfilledModels(sessionId, "claude")) return;

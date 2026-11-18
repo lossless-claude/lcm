@@ -480,26 +480,14 @@ export class ConversationStore {
       `UPDATE messages SET content = ?, event_time_source = CASE WHEN event_at IS NULL AND ? IS NOT NULL THEN 'transcript' ELSE event_time_source END, event_at = COALESCE(event_at, ?) WHERE message_id = ? AND
        (content = ? OR (instr(content, char(0)) > 0 AND substr(content, 1, instr(content, char(0)) - 1) = ?))`,
     );
-    const timelineTracking = this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'timeline_state'").get()
-      && Boolean((this.db.prepare("SELECT tracking FROM timeline_state WHERE id = 1").get() as { tracking: number })?.tracking);
-    const markDirty = timelineTracking ? this.db.prepare(`INSERT INTO timeline_dirty(session_id, rev)
-      SELECT c.session_id, 1 FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id WHERE m.message_id = ?
-      ON CONFLICT(session_id) DO UPDATE SET rev = rev + 1, dirty = 1, bumped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`) : undefined;
-    const hasFts = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").get() !== undefined;
-    const removeFts = hasFts ? this.db.prepare("DELETE FROM messages_fts WHERE rowid = ?") : undefined;
-    // Re-index with the message's stored call inputs, as capture indexes them.
-    const addFts = hasFts ? this.db.prepare(`INSERT INTO messages_fts(rowid, content) SELECT ?, ? || COALESCE((
-      SELECT char(10) || group_concat(input, char(10)) FROM transcript_tool_calls WHERE message_id = ?
-    ), '')`) : undefined;
+    const reindex = this.repairedMessageIndex();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const row of rows) {
         if (update.run(row.content, row.eventAt ?? null, row.eventAt ?? null, row.messageId, row.storedContent, row.storedContent).changes !== 1) {
           throw new Error(`cut message ${row.messageId} changed before repair`);
         }
-        markDirty?.run(row.messageId);
-        removeFts?.run(row.messageId);
-        addFts?.run(row.messageId, row.content, row.messageId);
+        reindex(row.messageId);
       }
       this.db.exec("COMMIT");
       return rows.length;
@@ -507,6 +495,60 @@ export class ConversationStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /**
+   * Replace stored tokenade placeholders with their originals as one unit (src/tokenade-folds.ts):
+   * a message row or call input that no longer holds exactly the placeholder text fails it whole.
+   */
+  repairFoldedContent(
+    sessionId: string,
+    rows: ReadonlyArray<{ messageId: number; storedContent: string; content: string; tokenCount: number }>,
+    calls: ReadonlyArray<{ callId: string; messageId: number; storedInput: string; input: string | null; inputBytes: number | null; truncated: number }>,
+  ): number {
+    if (rows.length === 0 && calls.length === 0) return 0;
+    const updateRow = this.db.prepare("UPDATE messages SET content = ?, token_count = ? WHERE message_id = ? AND content = ?");
+    const updateCall = this.db.prepare(`UPDATE transcript_tool_calls SET input = ?, input_bytes = ?, truncated = ?
+      WHERE session_id = ? AND call_id = ? AND message_id = ? AND input = ?`);
+    const reindex = this.repairedMessageIndex();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const call of calls) {
+        if (updateCall.run(call.input, call.inputBytes, call.truncated, sessionId, call.callId, call.messageId, call.storedInput).changes !== 1) {
+          throw new Error(`tool call ${call.callId} changed before repair`);
+        }
+      }
+      for (const row of rows) {
+        if (updateRow.run(row.content, row.tokenCount, row.messageId, row.storedContent).changes !== 1) {
+          throw new Error(`folded message ${row.messageId} changed before repair`);
+        }
+      }
+      for (const messageId of new Set([...rows, ...calls].map((repaired) => repaired.messageId))) reindex(messageId);
+      this.db.exec("COMMIT");
+      return rows.length + calls.length;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Marks a repaired message's session dirty for the timeline and re-indexes it with its stored call inputs, as capture indexes them. */
+  private repairedMessageIndex(): (messageId: number) => void {
+    const timelineTracking = this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'timeline_state'").get()
+      && Boolean((this.db.prepare("SELECT tracking FROM timeline_state WHERE id = 1").get() as { tracking: number })?.tracking);
+    const markDirty = timelineTracking ? this.db.prepare(`INSERT INTO timeline_dirty(session_id, rev)
+      SELECT c.session_id, 1 FROM messages m JOIN conversations c ON c.conversation_id = m.conversation_id WHERE m.message_id = ?
+      ON CONFLICT(session_id) DO UPDATE SET rev = rev + 1, dirty = 1, bumped_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`) : undefined;
+    const hasFts = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'").get() !== undefined;
+    const removeFts = hasFts ? this.db.prepare("DELETE FROM messages_fts WHERE rowid = ?") : undefined;
+    const addFts = hasFts ? this.db.prepare(`INSERT INTO messages_fts(rowid, content) SELECT message_id, content || COALESCE((
+      SELECT char(10) || group_concat(input, char(10)) FROM transcript_tool_calls WHERE message_id = m.message_id
+    ), '') FROM messages m WHERE m.message_id = ?`) : undefined;
+    return (messageId) => {
+      markDirty?.run(messageId);
+      removeFts?.run(messageId);
+      addFts?.run(messageId);
+    };
   }
 
   /** Cheap identity check for a validated prefix: stream raw rows, without hydration or redaction. */

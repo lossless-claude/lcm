@@ -75,7 +75,8 @@ MCP JSON use capture's redaction rules and 2048-byte cap; file bodies and
 subagent prompts are excluded. Missing or unaligned transcripts establish no call.
 A tool input or output tokenade has since folded never replaces what its call
 stores; the side that is not folded is re-derived as usual. A call first stored
-after its input was folded stores the placeholder, the only input left. A folded
+after its input was folded stores the original from tokenade's stash when capture
+can restore it (below), else the placeholder, the only input left. A folded
 output sets no exit code or block reason; on a call no unfolded output described,
 it records the harness's error flag and settles the outcome from it: `succeeded`
 when clear, `unknown` when set.
@@ -162,6 +163,17 @@ lcm import --provider claude --rebuild --session <id> --yes
 NUL characters in transcript message content become U+FFFD before storage. Comparison applies that normalization on both sides and accepts a stored row cut exactly at the transcript's first NUL, as older SQLite reads returned it, unless a placeholder on its own line in a row tokenade folded comes before that NUL. Such a cut row is repairable even when the rest of the session is aligned, unless the transcript holds a tokenade-folded row (below); rebuilding restores its full normalized text. A different prefix remains a mismatch.
 
 tokenade's cold-resume compaction rewrites a Claude Code transcript in place, replacing stale tool outputs and long tool-input strings with `[tokenade:elided N tokens on cold resume — recover: …]`, alone or after a kept opening. A folded row matches its stored original when the text around each placeholder agrees in order and each hidden span is long enough for the tokens its placeholder reports, less a bounded share for each redaction inside it. A kept opening may end mid-line, and a stored large-output notice of tokenade's naming the placeholder's size and stash stands for that span whole. A folded row whose stored copy already holds the same placeholders, captured after the fold, compares only the text around them. The transcript no longer holds the folded text, so a session whose transcript holds a folded row is reported ambiguous unless it is aligned. Restore the folded values, inputs as well as outputs, before rebuilding it: `tokenade expand-ref <hash>` prints each stashed original. A value folded as `(original not stashed)` cannot be restored, so its session can only be left as it is.
+
+Capture restores a folded row it has not stored yet from tokenade's stash, so a fold that reaches lcm before its first capture of the row costs nothing. The stash folder is `TOKENADE_STASH_DIR`, else `tokenade/stash` under the first set of `XDG_CACHE_HOME`, `LOCALAPPDATA`, `HOME/.cache` and `USERPROFILE/AppData/Local`, as tokenade resolves it. tokenade names each stashed file by the first 12 hex digits of the SHA-256 of its bytes, so a file that does not hash to the placeholder's hash, or that tokenade cut at its size cap, is refused. The stash holds tokenade's redacted copy of the whole value, so a kept opening must be the copy's start. A row is restored only when every fold in it is, and only when the restored row, stored, still matches the folded transcript row as above, so the next capture verifies it; otherwise the row is stored with its placeholders, the ingest response's `tokenadeFolds` counts it as kept, and the daemon log records `ingest.tokenade_folds_kept`. Its tool calls are derived from the restored row.
+
+Rows a capture stored as placeholders before this restore existed are repaired in place:
+
+```sh
+lcm import --provider claude --rebuild --expand-folds         # preview
+lcm import --provider claude --rebuild --expand-folds --yes   # back up, then restore
+```
+
+`--expand-folds` replaces, instead of rebuilding anything, each stored row and tool-call input that holds a placeholder on a line of its own and is exactly what capture stores today for a folded row of the session's transcript, with what capture would store for the restored row: content and token count, or input, input size and truncation. A stored original is never replaced, since it holds no placeholder, and equal folded rows name the same content hash, so rows are matched by content and calls by id, not by position. A session whose transcript is not in its project's Claude Code folder is looked up in the others. The report lists each session holding a placeholder with the rows and inputs the stash restores and those kept. With `--yes`, the daemon plans each session again under the project's lease, backs the project database up before its first change as for a rebuild, and writes the session in one transaction, re-indexing the changed messages' full-text entries; a row or input that changed since the plan fails the session whole. Summaries are kept: they were written from the placeholders.
 
 Each session is reported as one of:
 

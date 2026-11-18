@@ -24,6 +24,22 @@ export function isTokenadeFold(value: string): boolean {
   return value.includes("[tokenade:elided ") && TOKENADE_FOLDED_VALUE.test(value);
 }
 
+/** Does `text` hold a tokenade placeholder on a line of its own, as a folded value leaves one? */
+export function holdsTokenadePlaceholder(text: string): boolean {
+  return text.includes("[tokenade:elided ") && text.search(TOKENADE_FOLDS) !== -1;
+}
+
+/**
+ * A folded value's kept opening and the stash hash its placeholder names; no hash when tokenade
+ * stashed nothing. Undefined for a value tokenade did not fold.
+ */
+export function tokenadeFold(value: string): { head?: string; hash?: string } | undefined {
+  const match = value.includes("[tokenade:elided ") ? TOKENADE_FOLDED_VALUE.exec(value) : null;
+  if (!match) return undefined;
+  // `{head}\n{placeholder}`: the newline is tokenade's, not the head's.
+  return { ...(match.index > 0 || match[0].startsWith("\n") ? { head: value.slice(0, match.index) } : {}), ...(match[2] ? { hash: match[2] } : {}) };
+}
+
 /**
  * A cut match identifies a row written before NUL normalization and eligible for rebuilding.
  * An elided match is a stored row whose transcript copy tokenade has since folded: the

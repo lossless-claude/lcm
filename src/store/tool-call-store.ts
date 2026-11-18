@@ -5,10 +5,11 @@ import type { ScrubEngine } from "../scrub.js";
 import { normalizeMessageContent } from "../message-content.js";
 import { getLcmDbFeatures } from "../db/features.js";
 
-function storedInput(call: TranscriptToolCall, scrubber: ScrubEngine): { text: string | null; truncated: number } {
+/** A call's input as `transcript_tool_calls` stores it. */
+export function storedInput(call: TranscriptToolCall, scrub: (text: string) => string): { text: string | null; truncated: number } {
   const { input, inputLimit } = call;
   if (input === undefined) return { text: null, truncated: 0 };
-  const text = normalizeMessageContent(scrubber.scrubWithCounts(input).text);
+  const text = normalizeMessageContent(scrub(input));
   const bytes = Buffer.from(text);
   if (inputLimit === undefined || bytes.length <= inputLimit) return { text, truncated: 0 };
   return { text: truncateToolInput(text, inputLimit), truncated: 1 };
@@ -40,12 +41,13 @@ export function recordTranscriptToolCalls(
   // settles a call no unfolded result has described.
   const settle = db.prepare(`UPDATE transcript_tool_calls SET outcome = ?, harness_error = ?
     WHERE session_id = ? AND call_id = ? AND outcome = 'unknown' AND harness_error IS NULL`);
+  const scrub = (text: string) => scrubber.scrubWithCounts(text).text;
   const indexed = new Set<number>();
   for (const call of calls) {
     if (call.name !== undefined) {
       const messageId = call.message && messageIds.get(call.message);
       if (messageId === undefined) continue;
-      const input = storedInput(call, scrubber);
+      const input = storedInput(call, scrub);
       (call.elided ? insertFolded : insert).run(sessionId, call.callId, messageId,
         normalizeMessageContent(scrubber.scrubWithCounts(call.name).text), input.text, call.inputBytes ?? null, input.truncated);
       indexed.add(messageId);
@@ -53,7 +55,7 @@ export function recordTranscriptToolCalls(
       // Only a result tokenade has not folded is evidence of how the call ended.
       update.run(call.shellOutcome ?? null, ...SHELL_TOOLS, call.shellOutcome ?? null, call.outcome,
         call.harnessError === null ? null : Number(call.harnessError), call.exitCode,
-        call.blockReason === undefined ? null : storedInput({ ...call, input: call.blockReason, inputLimit: 2048 }, scrubber).text,
+        call.blockReason === undefined ? null : storedInput({ ...call, input: call.blockReason, inputLimit: 2048 }, scrub).text,
         sessionId, call.callId);
     } else if (typeof call.harnessError === "boolean") {
       settle.run(call.harnessError ? "unknown" : "succeeded", Number(call.harnessError), sessionId, call.callId);

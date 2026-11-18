@@ -26,7 +26,8 @@ import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { enqueue, withProjectMutation } from "../project-queue.js";
 import { holdSessionCompaction } from "./compact.js";
 import { backupProjectDatabase } from "../../claude-rebuild.js";
-import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../../cut-row-repair.js";
+import { applyCutRowRepair, planCutRowRepair, type CutRepairClient, type CutRowRepairPlan } from "../../cut-row-repair.js";
+import { applyFoldRepair, planFoldRepair, type FoldRepairPlan } from "../../tokenade-folds.js";
 import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 import {
@@ -61,6 +62,11 @@ export interface IngestInput {
   rebuild?: boolean;
   /** With `rebuild`: back the project database up first, and rebuild nothing when that fails. */
   backup?: boolean;
+  /**
+   * With `rebuild` on a Claude Code session: instead of rebuilding it, replace its stored tokenade
+   * placeholders with their originals from tokenade's stash (`lcm import --provider claude --rebuild --expand-folds --yes`).
+   */
+  expand_folds?: boolean;
   /** Subagent attribution, carried from the transcript's `.meta.json` sidecar. */
   parent_session_id?: string;
   subagent_type?: string;
@@ -213,9 +219,42 @@ async function rebuildSession(
   }
 }
 
-async function repairCutSession(
-  input: IngestInput & { session_id: string; client: CutRepairClient }, cwd: string,
-  scrubber: ScrubEngine, paths: LcmPaths, res: ServerResponse, log: DaemonLog,
+/** A stored-row repair: what it finds for a session, and how it writes what it found. */
+interface RowRepair<Plan extends { kind: string }> {
+  name: "cut" | "fold";
+  plan(db: DatabaseSync, transcriptPath: string | undefined, scrub: (text: string) => string): Promise<Plan>;
+  apply(db: DatabaseSync, plan: Plan, capture: SessionCapture): Promise<number>;
+}
+
+const cutRepair = (sessionId: string, cwd: string, client: CutRepairClient): RowRepair<CutRowRepairPlan> => ({
+  name: "cut",
+  plan: (db, transcriptPath, scrub) => planCutRowRepair(db, { sessionId, cwd, client, transcriptPath, scrub }),
+  async apply(db, plan, capture) {
+    const repaired = applyCutRowRepair(db, plan);
+    const conversations = new Set<number>();
+    for (const row of plan.rows) {
+      const message = await capture.conversationStore.getMessageById(row.messageId);
+      if (message) conversations.add(message.conversationId);
+    }
+    for (const id of conversations) await capture.summaryStore.recomputeTimeBounds(id);
+    return repaired;
+  },
+});
+
+const foldRepair = (sessionId: string): RowRepair<FoldRepairPlan> => ({
+  name: "fold",
+  plan: (db, transcriptPath, scrub) => planFoldRepair(db, { sessionId, transcriptPath, scrub }),
+  apply: async (db, plan) => applyFoldRepair(db, plan),
+});
+
+/**
+ * Repairs stored rows of one session in place, under the project's lease: the plan is made again
+ * here, so what it saw is what is written. With `backup`, the project database is copied first;
+ * a failed backup fails the request before anything changes.
+ */
+async function repairSessionRows<Plan extends { kind: string }>(
+  input: IngestInput & { session_id: string; client: SessionClient }, cwd: string,
+  scrubber: ScrubEngine, paths: LcmPaths, res: ServerResponse, log: DaemonLog, repair: RowRepair<Plan>,
 ): Promise<void> {
   const dbPath = projectDbPath(cwd, paths);
   const pid = projectId(cwd);
@@ -232,10 +271,7 @@ async function repairCutSession(
           const path = transcriptSource(input.client).locate({
             sessionId: input.session_id, cwd, transcriptPath: input.transcript_path, source: "import",
           });
-          const plan = await planCutRowRepair(db, {
-            sessionId: input.session_id, cwd, client: input.client, transcriptPath: path,
-            scrub: (text) => scrubber.scrubWithCounts(text).text,
-          });
+          const plan = await repair.plan(db, path, (text) => scrubber.scrubWithCounts(text).text);
           if (plan.kind !== "repairable") return { repair: plan, repaired: 0 };
           // One copy per project run, as for a Claude rebuild: the caller asks for it until one exists.
           if (input.backup === true) {
@@ -245,14 +281,7 @@ async function repairCutSession(
               throw new Error(`backup failed, nothing was repaired: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
-          const repaired = applyCutRowRepair(db, plan);
-          const capture = new SessionCapture(db, pid, scrubber, paths);
-          const conversations = new Set<number>();
-          for (const row of plan.rows) {
-            const message = await capture.conversationStore.getMessageById(row.messageId);
-            if (message) conversations.add(message.conversationId);
-          }
-          for (const id of conversations) await capture.summaryStore.recomputeTimeBounds(id);
+          const repaired = await repair.apply(db, plan, new SessionCapture(db, pid, scrubber, paths));
           return { repair: plan, repaired };
         } finally {
           closeLcmConnection(dbPath);
@@ -262,8 +291,8 @@ async function repairCutSession(
     sendJson(res, 200, { ...result, ...(backupPath ? { backupPath, removedBackups } : {}) });
   } catch (error) {
     const status = error instanceof TranscriptSourceError ? 400 : 500;
-    log.write(status === 500 ? "error" : "warn", "ingest.cut_repair_failed", { cwd, session_id: input.session_id, err: error });
-    sendJson(res, status, { error: error instanceof Error ? error.message : "cut repair failed", ...(backupPath ? { backupPath, removedBackups } : {}) });
+    log.write(status === 500 ? "error" : "warn", `ingest.${repair.name}_repair_failed`, { cwd, session_id: input.session_id, err: error });
+    sendJson(res, status, { error: error instanceof Error ? error.message : `${repair.name} repair failed`, ...(backupPath ? { backupPath, removedBackups } : {}) });
   }
 }
 
@@ -326,6 +355,10 @@ export function createIngestHandler(
       sendJson(res, 400, { error: "rebuild reads a transcript and takes no messages" });
       return;
     }
+    if (input.expand_folds === true && (input.rebuild !== true || source.client !== "claude")) {
+      sendJson(res, 400, { error: "expand_folds applies only with rebuild to a Claude Code session" });
+      return;
+    }
     const pid = projectId(cwd);
     try {
       const scrubber = await ScrubEngine.forProject(
@@ -333,10 +366,13 @@ export function createIngestHandler(
         projectDir(cwd, paths),
       );
       if (input.rebuild === true) {
-        if (source.client === "claude") {
-          await rebuildSession({ ...input, session_id }, cwd, scrubber, paths, res, log);
+        if (source.client !== "claude") {
+          await repairSessionRows({ ...input, session_id, client: source.client }, cwd, scrubber, paths, res, log,
+            cutRepair(session_id, cwd, source.client));
+        } else if (input.expand_folds === true) {
+          await repairSessionRows({ ...input, session_id, client: source.client }, cwd, scrubber, paths, res, log, foldRepair(session_id));
         } else {
-          await repairCutSession({ ...input, session_id, client: source.client }, cwd, scrubber, paths, res, log);
+          await rebuildSession({ ...input, session_id }, cwd, scrubber, paths, res, log);
         }
         return;
       }
@@ -383,6 +419,8 @@ export function createIngestHandler(
             });
             written = captured;
           }
+          // A kept row stores tokenade's placeholder: the transcript no longer holds its original.
+          if (captured?.folds?.kept) log.write("warn", "ingest.tokenade_folds_kept", { cwd, session_id, ...captured.folds });
           if (!written || written.records.length === 0) return { ingested: 0, totalTokens: 0 };
           const { conversationId, records, totalCounts } = written;
 
@@ -405,6 +443,7 @@ export function createIngestHandler(
             ingested: records.length,
             totalTokens,
             ...(totalRedacted > 0 ? { redacted: totalRedacted, redactedCategories: redactionCategories } : {}),
+            ...(captured?.folds ? { tokenadeFolds: captured.folds } : {}),
           };
         } finally {
           closeLcmConnection(dbPath);
