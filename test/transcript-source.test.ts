@@ -116,6 +116,29 @@ describe("Claude transcript source", () => {
       await expect(source.read(path, compacted(other), ctx(cwd))).rejects.toThrow(TranscriptSourceError);
     });
 
+    it("lets other work run while it compares a long stored history", async () => {
+      const { cwd, path } = fixture();
+      writeFileSync(path, Array.from({ length: 6 }, (_, index) => `${line("user", `key sk-${index}`)}\n`).join(""));
+      const history = Array.from({ length: 6 }, () => ({ role: "user", content: "key [REDACTED]" }));
+      let ticks = 0;
+      const timer = setInterval(() => { ticks++; }, 0);
+      const seen: number[] = [];
+      // Each row differs only by redaction, so each compare scrubs; a slow scrub stands in for a large row.
+      const scrub = (text: string) => {
+        seen.push(ticks);
+        const until = performance.now() + 15;
+        while (performance.now() < until) { /* busy */ }
+        return text.replace(/sk-\d+/g, "[REDACTED]");
+      };
+      try {
+        expect((await source.read(path, compacted(history), { ...ctx(cwd), scrub })).sourceOffset).toBe(6);
+      } finally {
+        clearInterval(timer);
+      }
+      expect(seen.length).toBeGreaterThanOrEqual(6);
+      expect(seen.at(-1)).toBeGreaterThan(seen[0]);
+    });
+
     it("continues past a stored tool output tokenade has since folded, and only past that", async () => {
       const { cwd, path } = fixture();
       const placeholder = "[tokenade:elided 750 tokens on cold resume — recover: tokenade expand-ref 0123456789ab]";

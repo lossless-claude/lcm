@@ -8,6 +8,7 @@ import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscr
 import { loadClaudeToolUseModels, loadClaudeTranscriptCursor, loadTranscriptCursor, saveClaudeTranscriptCursor, saveTranscriptCursor } from "./db/transcript-cursor.js";
 import { readClaudeTranscriptDelta, type ClaudeTranscriptCursor } from "./claude-transcript-reader.js";
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
+import { yieldToEventLoop } from "./daemon/project-queue.js";
 import type { EventsDb } from "./hooks/events-db.js";
 import {
   extractOmpTurnModels,
@@ -34,6 +35,9 @@ import { parseTranscript, type ParsedMessage, type SessionUrlDeclaration } from 
  * client. `SessionCapture` (src/capture.ts) and the explicit event-time repair are its readers; no route
  * selects an adapter itself.
  */
+
+/** How long a stored-prefix compare runs before it lets the daemon serve other requests. */
+const COMPARE_YIELD_BUDGET_MS = 10;
 
 /** Bump when Codex recovery can prove alignment that an older rule rejected. */
 export const CODEX_RECOVERY_RULE_VERSION = 1;
@@ -331,7 +335,14 @@ async function validateTranscriptRecovery(
   }
   const previous = await stored.storedMessages(offset);
   if (previous.length !== stored.storedCount - offset) throw new TranscriptSourceError(`Stored ${label} history changed during recovery`);
+  // Rows that differ only by redaction are scrubbed on every compare; a long history would hold
+  // the daemon for seconds. `previous` is a snapshot, so a yield cannot change what is compared.
+  let sliceStarted = performance.now();
   for (const [index, prior] of previous.entries()) {
+    if (performance.now() - sliceStarted >= COMPARE_YIELD_BUDGET_MS) {
+      await yieldToEventLoop();
+      sliceStarted = performance.now();
+    }
     const message = messages[offset + index];
     if (message.role !== prior.role || !storedContentMatches(prior.content, message, ctx.scrub)) {
       throw new TranscriptSourceError(`${label} transcript prefix differs from stored history; check the original transcript and redaction settings before retrying`);
