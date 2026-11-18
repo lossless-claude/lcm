@@ -447,6 +447,17 @@ describe("a stored tool output tokenade has since folded in the transcript", () 
       .toMatchObject({ kind: "aligned", gaps: 0, extras: 0 });
   });
 
+  it("classifies an aligned folded session by scrubbing only the rows that differ", async () => {
+    await storeFullOutput([], rerun);
+    const scrubbed: string[] = [];
+    const scrub = (text: string) => { scrubbed.push(text); return text; };
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(toolTranscript(placeholder, rerun)), scrub))
+      .toMatchObject({ kind: "aligned", gaps: 0, extras: 0 });
+    // Only the folded row: its transcript text, its stored output and the text around the placeholder.
+    expect(scrubbed.filter((text) => ["q1", "q2", "r1"].includes(text))).toEqual([]);
+    expect(scrubbed.length).toBeLessThanOrEqual(3);
+  });
+
   it("refuses a rebuild even when the folded output still appears unfolded later", async () => {
     await storeFullOutput([["assistant", "r2"]], rerun);
     const plan = await planSessionRebuild(db, sessionId, parseTranscript(toolTranscript(placeholder, rerun)), identity);

@@ -111,9 +111,19 @@ export async function planSessionRebuild(
   if (!transcript) return { ...base, kind: "unavailable", reason: "no transcript file" };
   if (conversationId === undefined) return { ...base, kind: "ambiguous", reason: `${conversations.length} conversations` };
   const untagged = conversations[0].role_tagging === null;
+  const stored = await new ConversationStore(db).getSessionMessages(sessionId);
+  // A folded transcript is never rebuilt from (below), so a stored history that is its prefix
+  // under the capture guard's compare is aligned; `align` would scrub every row on both sides
+  // to say so, and rescan every position for each redacted stored row.
+  if (!untagged && stored.length <= transcript.length && transcript.some((message) => message.elided) &&
+      stored.every((message, index) => message.role === transcript[index].role &&
+        ["full", "elided"].includes(compareStoredMessageContent(
+          message.content, transcript[index].content, scrub, transcript[index].elided) ?? ""))) {
+    return { ...base, kind: "aligned" };
+  }
 
   const key = (role: string, content: string) => `${role}\u0000${normalizeMessageContent(scrub(content))}`;
-  const have = (await new ConversationStore(db).getSessionMessages(sessionId)).map((m) => key(m.role, m.content));
+  const have = stored.map((m) => key(m.role, m.content));
   const currentKeys = transcript.map((m) => key(m.role, m.content));
   const current = searchable(transcript);
   const { gaps, extras, cuts } = align(have, currentKeys, current, scrub);
