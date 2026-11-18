@@ -18,7 +18,7 @@ type ContentIndex = Map<string, number[]>;
 type Alignment = { messages: ParsedMessage[]; index?: { raw: ContentIndex; scrubbed: ContentIndex; budget: number }; next: number; aligned: boolean };
 const key = (role: string, content: string) => JSON.stringify([role, content]);
 const matches = (stored: MessageRecord, current: ParsedMessage | undefined, scrub: Scrub) =>
-  current !== undefined && stored.role === current.role && compareStoredMessageContent(stored.content, current.content, scrub) !== undefined;
+  current !== undefined && stored.role === current.role && compareStoredMessageContent(stored.content, current.content, scrub, current.elided) !== undefined;
 
 async function fileOrderAlignment(messages: ParsedMessage[], scrub: Scrub): Promise<Alignment> {
   const raw: ContentIndex = new Map(), scrubbed: ContentIndex = new Map();
