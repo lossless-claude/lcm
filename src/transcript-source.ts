@@ -7,6 +7,7 @@ import { extractCodexTurnModels, type CodexSessionMeta } from "./codex-transcrip
 import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscriptDelta } from "./codex-transcript-reader.js";
 import { loadClaudeToolUseModels, loadClaudeTranscriptCursor, loadTranscriptCursor, saveClaudeTranscriptCursor, saveTranscriptCursor } from "./db/transcript-cursor.js";
 import { readClaudeTranscriptDelta, type ClaudeTranscriptCursor } from "./claude-transcript-reader.js";
+import type { TranscriptChunk } from "./jsonl-transcript-reader.js";
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
 import { yieldToEventLoop } from "./daemon/project-queue.js";
 import type { EventsDb } from "./hooks/events-db.js";
@@ -159,9 +160,27 @@ function capturedFingerprint(messages: ReadonlyArray<{ role: string; content: st
   return hash.digest("hex");
 }
 
-async function validateClaudePrefix(path: string, stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext): Promise<void> {
+/**
+ * Stored rows a saved chunk vouches for: the same bytes at the same offsets parse to the same
+ * messages at the same positions, and those rows compared equal to them when the chunk was saved.
+ */
+function provenMessages(saved: readonly TranscriptChunk[], read: readonly TranscriptChunk[], storedCount: number): Set<number> {
+  const byStart = new Map(saved.map((chunk) => [chunk.start, chunk]));
+  const proven = new Set<number>();
+  for (const chunk of read) {
+    const match = byStart.get(chunk.start);
+    if (!match || match.end !== chunk.end || match.sha256 !== chunk.sha256 || match.firstMessage !== chunk.firstMessage ||
+        match.messageCount !== chunk.messageCount || chunk.firstMessage + chunk.messageCount > storedCount) continue;
+    for (let index = chunk.firstMessage; index < chunk.firstMessage + chunk.messageCount; index++) proven.add(index);
+  }
+  return proven;
+}
+
+async function validateClaudePrefix(
+  path: string, stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext, proven?: () => ReadonlySet<number>,
+): Promise<void> {
   if (!stored.prefixFingerprint || ctx.redactionKey === undefined) {
-    return validateTranscriptRecovery(stored, messages, ctx, "Claude");
+    return validateTranscriptRecovery(stored, messages, ctx, "Claude", 0, proven);
   }
   const key = JSON.stringify([ctx.cwd, ctx.sessionId, path]);
   const prior = claudePrefixes.get(key);
@@ -169,7 +188,7 @@ async function validateClaudePrefix(path: string, stored: StoredTranscript, mess
   claudePrefixes.delete(key);
   // A transcript gone since the parse has no identity to remember; the full compare decides.
   const stat = statSync(path, { throwIfNoEntry: false });
-  if (!stat) return validateTranscriptRecovery(stored, messages, ctx, "Claude");
+  if (!stat) return validateTranscriptRecovery(stored, messages, ctx, "Claude", 0, proven);
   const file = `${stat.dev}:${stat.ino}`;
   let offset = 0;
   let storedHash: string | undefined;
@@ -182,7 +201,7 @@ async function validateClaudePrefix(path: string, stored: StoredTranscript, mess
   // Fingerprint before the comparison: never bless rows changed after it has read them.
   const fingerprint = offset === stored.storedCount && storedHash !== undefined
     ? storedHash : await stored.prefixFingerprint(stored.storedCount);
-  await validateTranscriptRecovery(stored, messages, ctx, "Claude", offset);
+  await validateTranscriptRecovery(stored, messages, ctx, "Claude", offset, proven);
   claudePrefixes.set(key, {
     count: stored.storedCount,
     stored: fingerprint,
@@ -238,6 +257,7 @@ const claudeSource: TranscriptSource = {
     let delta: Awaited<ReturnType<typeof readClaudeTranscriptDelta>>;
     try {
       delta = await readClaudeTranscriptDelta(path, { cursor: prior, includeTrailingRecord: true, signal: ctx.signal,
+        chunks: prior?.lastChunk ? { last: prior.lastChunk } : {},
         ...(ctx.requireComplete ? { recordMatches: (record: string) => {
           try { return JSON.parse(record).uuid === ctx.captureThroughUuid; } catch { return false; }
         } } : {}),
@@ -247,6 +267,11 @@ const claudeSource: TranscriptSource = {
       throw new TranscriptSourceError(error instanceof Error ? error.message : "invalid transcript");
     }
     const messages = delta.resumed ? delta.messages : parseTranscript(path, "current", delta.messages);
+    // A trusted cursor's chunks spare the compare of rows whose transcript bytes are unchanged,
+    // as after a tokenade fold rewrote other lines of the file.
+    const savedChunks = prior?.savedChunks;
+    const readChunks = delta.chunks?.list;
+    const proven = savedChunks && readChunks ? () => provenMessages(savedChunks(), readChunks, storedCount) : undefined;
     const guarded = stored !== undefined && (restampParserShape || await stored.verifyAfterCompaction?.() || cursor !== undefined);
     let validated = delta.resumed || stored === undefined;
     // Before compaction stopped counting its own event rows, a capture after a compaction
@@ -259,9 +284,9 @@ const claudeSource: TranscriptSource = {
           claudePrefixes.delete(key);
           await validateTranscriptRecovery(stored, messages, ctx, "Claude");
         } else if (await stored.verifyAfterCompaction?.()) {
-          await validateClaudePrefix(path, stored, messages, ctx);
+          await validateClaudePrefix(path, stored, messages, ctx, proven);
         } else {
-          await validateTranscriptRecovery(stored, messages, ctx, "Claude");
+          await validateTranscriptRecovery(stored, messages, ctx, "Claude", 0, proven);
         }
         validated = true;
       } catch (error) {
@@ -291,7 +316,8 @@ const claudeSource: TranscriptSource = {
       checkpoint: validated && ctx.redactionKey !== undefined && (stored || messages.length > 0)
         ? { ...delta.cursor, redactionKey: ctx.redactionKey, toolUseModels: delta.toolUseModels, replaceToolUseModels: !delta.resumed,
             validatedCount: !delta.resumed && stored ? storedCount : delta.cursor.messageCount,
-            pendingFingerprint: !delta.resumed && stored ? capturedFingerprint(messages.slice(storedCount), ctx.scrub) : undefined }
+            pendingFingerprint: !delta.resumed && stored ? capturedFingerprint(messages.slice(storedCount), ctx.scrub) : undefined,
+            chunks: delta.chunks }
         : undefined,
       backfillModels(events, sessionId) {
         if (!events.hasUnfilledModels(sessionId, "claude")) return;
@@ -329,12 +355,15 @@ function validateCodexMetadata(meta: CodexSessionMeta, ctx: ReadContext): void {
  */
 async function validateTranscriptRecovery(
   stored: StoredTranscript, messages: ParsedMessage[], ctx: ReadContext, label: string, offset = 0,
+  proven?: () => ReadonlySet<number>,
 ): Promise<void> {
   if (messages.length < stored.storedCount) {
     throw new TranscriptSourceError(`${label} transcript is shorter than stored history; restore the full transcript before retrying`);
   }
   const previous = await stored.storedMessages(offset);
   if (previous.length !== stored.storedCount - offset) throw new TranscriptSourceError(`Stored ${label} history changed during recovery`);
+  // Asked only now: a proof must not cover rows changed before they were read.
+  const skip = proven?.();
   // Rows that differ only by redaction are scrubbed on every compare; a long history would hold
   // the daemon for seconds. `previous` is a snapshot, so a yield cannot change what is compared.
   let sliceStarted = performance.now();
@@ -343,6 +372,7 @@ async function validateTranscriptRecovery(
       await yieldToEventLoop();
       sliceStarted = performance.now();
     }
+    if (skip?.has(offset + index)) continue;
     const message = messages[offset + index];
     if (message.role !== prior.role || !storedContentMatches(prior.content, message, ctx.scrub)) {
       throw new TranscriptSourceError(`${label} transcript prefix differs from stored history; check the original transcript and redaction settings before retrying`);

@@ -12,12 +12,17 @@
  * live beside their parsers (*-transcript-reader.ts).
  */
 
-import { createHash } from "node:crypto";
+import { createHash, type Hash } from "node:crypto";
 import { open, stat, type FileHandle } from "node:fs/promises";
 import type { TranscriptToolCall } from "./tool-calls.js";
 import type { ParsedMessage } from "./transcript.js";
 
 const READ_CHUNK_BYTES = 64 * 1024;
+/** A proof chunk closes at the first record end at least this far past its start. */
+const PROOF_CHUNK_BYTES = 64 * 1024;
+/** Changing it retires every saved chunk: none can match a chunk hashed under another version. */
+const PROOF_CHUNK_DOMAIN = "lcm-transcript-chunk-v1\0";
+const NEWLINE = Buffer.from("\n");
 const METADATA_LIMIT_BYTES = 1024 * 1024;
 const YIELD_AFTER_BYTES = 1024 * 1024;
 const FINGERPRINT_WINDOW_BYTES = 4096;
@@ -75,6 +80,61 @@ export interface ReadJsonlTranscriptDeltaOptions {
   /** Optional transient boundary proof, including records behind a resumed cursor. */
   recordMatches?: (record: string) => boolean;
   signal?: AbortSignal;
+  /**
+   * Hash the consumed records on a line-aligned grid laid from byte 0 (formats without
+   * `selectMessages` only). A resumed read continues the grid from `last`, the chunk saved
+   * with its cursor, and hashes nothing when that chunk does not end at the cursor.
+   */
+  chunks?: { last?: TranscriptChunk };
+}
+
+/** A line-aligned span of the consumed prefix, and the messages its records produced. A type, so a database row casts to it. */
+export type TranscriptChunk = {
+  start: number;
+  end: number;
+  /** Index, among all the transcript's messages, of the first message from this span. */
+  firstMessage: number;
+  messageCount: number;
+  sha256: string;
+};
+
+/** The chunks a read hashed; the saved ones from `from` on are replaced by `list`. */
+export interface TranscriptChunks {
+  from: number;
+  list: TranscriptChunk[];
+}
+
+interface ChunkGrid {
+  open: Omit<TranscriptChunk, "end" | "sha256"> & { hash: Hash };
+  list: TranscriptChunk[];
+}
+
+function chunkHash(): Hash {
+  return createHash("sha256").update(PROOF_CHUNK_DOMAIN);
+}
+
+function closeChunk(grid: ChunkGrid, end: number): void {
+  const { hash, ...open } = grid.open;
+  grid.list.push({ ...open, end, sha256: hash.digest("hex") });
+  grid.open = { start: end, firstMessage: open.firstMessage + open.messageCount, messageCount: 0, hash: chunkHash() };
+}
+
+/**
+ * Where a read's chunks start. A resumed read extends the saved partial chunk only after
+ * re-hashing its bytes: a span edited inside the cursor's unsampled middle is never re-blessed.
+ */
+async function startChunkGrid(
+  handle: FileHandle, cursor: JsonlTranscriptCursor | undefined, last: TranscriptChunk | undefined, label: string,
+): Promise<ChunkGrid | undefined> {
+  const at = (start: number, firstMessage: number, messageCount: number, hash: Hash): ChunkGrid =>
+    ({ open: { start, firstMessage, messageCount, hash }, list: [] });
+  if (!cursor || cursor.offset === 0) return at(0, 0, 0, chunkHash());
+  if (!last || !cursor.recordBoundary || last.end !== cursor.offset || last.firstMessage + last.messageCount !== cursor.messageCount) {
+    return undefined;
+  }
+  if (last.end - last.start >= PROOF_CHUNK_BYTES) return at(last.end, cursor.messageCount, 0, chunkHash());
+  const hash = chunkHash().update(await readWindow(handle, last.start, last.end - last.start, label));
+  return hash.copy().digest("hex") === last.sha256 ? at(last.start, last.firstMessage, last.messageCount, hash) : undefined;
 }
 
 export interface JsonlTranscriptDelta<M, R = JsonlTranscriptRecord<M>> {
@@ -88,6 +148,8 @@ export interface JsonlTranscriptDelta<M, R = JsonlTranscriptRecord<M>> {
   sessionMeta: M;
   /** The delta's records in file order; present only for a format that selects its messages. */
   records?: R[];
+  /** Present when chunks were asked for and the grid could be continued. */
+  chunks?: TranscriptChunks;
 }
 
 interface ScanResult<R> {
@@ -217,6 +279,7 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
   includeTrailingRecord: boolean,
   initialRecordBoundary: boolean,
   signal?: AbortSignal,
+  grid?: ChunkGrid,
 ): Promise<ScanResult<R>> {
   const messages: ParsedMessage[] = [];
   const records: R[] = [];
@@ -254,8 +317,15 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
       }
 
       signal?.throwIfAborted();
+      const messagesBefore = messages.length;
       take(parseCompleteRecord(format, decodeRecord(format, pending, pendingLength, pendingOffset), pendingOffset));
       const nextOffset = position + index + 1;
+      if (grid) {
+        for (const part of pending) grid.open.hash.update(part);
+        grid.open.hash.update(NEWLINE);
+        grid.open.messageCount += messages.length - messagesBefore;
+        if (nextOffset - grid.open.start >= PROOF_CHUNK_BYTES) closeChunk(grid, nextOffset);
+      }
 
       committedOffset = nextOffset;
       pendingOffset = nextOffset;
@@ -279,6 +349,8 @@ async function scanRecords<M, R extends JsonlTranscriptRecord<M>>(
     }
   }
 
+  // A final record without a newline can still grow, so it belongs to no chunk.
+  if (grid && committedOffset > grid.open.start) closeChunk(grid, committedOffset);
   if (pendingLength > 0 && includeTrailingRecord && position === snapshotSize) {
     const record = decodeRecord(format, pending, pendingLength, pendingOffset);
     if (!format.isCompleteTrailingRecord || format.isCompleteTrailingRecord(record)) {
@@ -382,6 +454,12 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
       : await fingerprintPrefix(handle, guardOffset, format);
     const sessionMeta = format.hasSessionMeta === false ? undefined : await readSessionMeta(handle, format, snapshotSize);
     const startOffset = resumed ? options.cursor!.offset : 0;
+    if (options.chunks && format.selectMessages) throw new Error(`${format.label} transcript messages are not record-local`);
+    const grid = options.chunks
+      ? await startChunkGrid(handle, resumed ? options.cursor : undefined, options.chunks.last, format.label)
+      : undefined;
+    // `list` fills during the scan; `from` is where the grid started.
+    const chunks = grid ? { from: grid.open.start, list: grid.list } : undefined;
 
     let recordMatched = false;
     let boundaryScanExceeded = false;
@@ -398,6 +476,7 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
       options.includeTrailingRecord,
       resumed ? options.cursor!.recordBoundary : startOffset === 0,
       options.signal,
+      grid,
     );
     options.signal?.throwIfAborted();
     if (options.recordMatches && !recordMatched && startOffset > 0) {
@@ -424,6 +503,7 @@ export async function readJsonlTranscriptDelta<M, R extends JsonlTranscriptRecor
       messages: scan.messages,
       toolCalls: scan.toolCalls,
       records: scan.records,
+      ...(chunks ? { chunks } : {}),
       cursor: {
         offset: scan.offset,
         messageCount: initialMessageCount + scan.messages.length,

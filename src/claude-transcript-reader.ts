@@ -1,5 +1,6 @@
 import {
   readJsonlTranscriptDelta, type JsonlTranscriptCursor, type JsonlTranscriptDelta, type ReadJsonlTranscriptDeltaOptions,
+  type TranscriptChunk, type TranscriptChunks,
 } from "./jsonl-transcript-reader.js";
 import { CLAUDE_PARSER_SHAPE, parseClaudeTranscriptRecord, type SessionUrlDeclaration } from "./transcript.js";
 
@@ -14,6 +15,16 @@ export interface ClaudeTranscriptCursor extends JsonlTranscriptCursor {
   validatedCount?: number;
   /** Scrubbed, normalized digest of the tail written during that enrollment. */
   pendingFingerprint?: string;
+  /** Saved with the cursor: the chunks this read hashed, over messages it accepted or stored. */
+  chunks?: TranscriptChunks;
+  /** Loaded: the last saved chunk, from which a resumed read continues the grid. */
+  lastChunk?: TranscriptChunk;
+  /**
+   * Loaded: every saved chunk, while the cursor's prefix fingerprint still stands. A stored-row
+   * change clears that fingerprint, so a chunk whose bytes and message range are unchanged still
+   * covers rows that compared equal to what those bytes parse to.
+   */
+  savedChunks?: () => TranscriptChunk[];
 }
 
 /** The shared reader's delta, plus the tool-use models decoded from the records it read. */

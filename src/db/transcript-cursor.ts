@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type { ClaudeTranscriptCursor } from "../claude-transcript-reader.js";
-import type { JsonlTranscriptCursor } from "../jsonl-transcript-reader.js";
+import type { JsonlTranscriptCursor, TranscriptChunk } from "../jsonl-transcript-reader.js";
 
 /**
  * The byte-cursor checkpoint store for every append-only JSONL client
@@ -35,6 +35,16 @@ export function ensureTranscriptCursorTable(db: DatabaseSync): void {
     model TEXT NOT NULL,
     PRIMARY KEY (conversation_id, tool_use_id)
   )`);
+  // No triggers of its own: the cursor triggers below clear the prefix fingerprint these rows are read under.
+  db.exec(`CREATE TABLE IF NOT EXISTS claude_transcript_chunks (
+    conversation_id INTEGER NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    start_offset INTEGER NOT NULL,
+    end_offset INTEGER NOT NULL,
+    first_message INTEGER NOT NULL,
+    message_count INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, start_offset)
+  ) WITHOUT ROWID`);
   // A durable validation is invalidated in the same transaction as a prefix mutation.
   // Appends are checked by messageCount; adding compaction's excluded event at the tail
   // must not force a full transcript scan.
@@ -93,8 +103,28 @@ export function loadClaudeTranscriptCursor(db: DatabaseSync, conversationId: num
   if (!row || row.claude_redaction_key === null) return undefined;
   const cursor = loadTranscriptCursor(db, conversationId, row.transcript_path)!;
   const trusted = row.transcript_path === path && row.claude_database_identity === databaseIdentity(db);
-  return { ...cursor, ...(trusted ? {} : { fingerprint: undefined }), redactionKey: row.claude_redaction_key,
-    validatedCount: row.claude_validated_count ?? undefined, pendingFingerprint: row.claude_pending_fingerprint ?? undefined };
+  const fingerprint = trusted ? cursor.fingerprint : undefined;
+  return { ...cursor, fingerprint, redactionKey: row.claude_redaction_key,
+    validatedCount: row.claude_validated_count ?? undefined, pendingFingerprint: row.claude_pending_fingerprint ?? undefined,
+    ...(fingerprint === undefined ? {} : claudeTranscriptChunks(db, conversationId, fingerprint)) };
+}
+
+const CHUNK_COLUMNS = `start_offset AS start, end_offset AS "end", first_message AS firstMessage,
+  message_count AS messageCount, sha256`;
+
+function claudeTranscriptChunks(
+  db: DatabaseSync, conversationId: number, fingerprint: string,
+): Pick<ClaudeTranscriptCursor, "lastChunk" | "savedChunks"> {
+  const lastChunk = db.prepare(`SELECT ${CHUNK_COLUMNS} FROM claude_transcript_chunks WHERE conversation_id = ?
+    ORDER BY start_offset DESC LIMIT 1`).get(conversationId) as TranscriptChunk | undefined;
+  return {
+    ...(lastChunk ? { lastChunk } : {}),
+    // Called after the stored rows are read: a change to them since the cursor was loaded
+    // has cleared its fingerprint, and then no chunk vouches for them.
+    savedChunks: () => db.prepare(`SELECT ${CHUNK_COLUMNS} FROM claude_transcript_chunks WHERE conversation_id = ?
+      AND EXISTS (SELECT 1 FROM codex_ingest_cursors WHERE conversation_id = ? AND prefix_fingerprint = ?)
+      ORDER BY start_offset`).all(conversationId, conversationId, fingerprint) as TranscriptChunk[],
+  };
 }
 
 /** Called inside capture's append transaction, after its scrubbing and parser restamp. */
@@ -110,6 +140,13 @@ export function saveClaudeTranscriptCursor(db: DatabaseSync, conversationId: num
     ON CONFLICT(conversation_id, tool_use_id) DO UPDATE SET model = excluded.model`);
   if (cursor.replaceToolUseModels) db.prepare("DELETE FROM claude_tool_use_models WHERE conversation_id = ?").run(conversationId);
   for (const [id, model] of cursor.toolUseModels ?? []) save.run(conversationId, id, model);
+  if (!cursor.chunks) return;
+  db.prepare("DELETE FROM claude_transcript_chunks WHERE conversation_id = ? AND start_offset >= ?").run(conversationId, cursor.chunks.from);
+  const chunk = db.prepare(`INSERT INTO claude_transcript_chunks
+    (conversation_id, start_offset, end_offset, first_message, message_count, sha256) VALUES (?, ?, ?, ?, ?, ?)`);
+  for (const { start, end, firstMessage, messageCount, sha256 } of cursor.chunks.list) {
+    chunk.run(conversationId, start, end, firstMessage, messageCount, sha256);
+  }
 }
 
 /** A rebuild's full parse retires both the volatile memo and the durable prefix proof. */
