@@ -1952,4 +1952,25 @@ describe("PreCompact reply budget", () => {
       vi.unstubAllEnvs();
     }
   }, 15_000);
+
+  it("logs each summarizer call's timing", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-call-timing-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "call-timing");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async (_text, _aggressive, ctx) => {
+      ctx?.onCallTiming?.({ provider: "claude-process", model: "haiku", outcome: "ok", wallMs: 9100, durationMs: 8800,
+        durationApiMs: 4900, inputTokens: 21000, outputTokens: 900, thinkingTokens: 0 });
+      return "summary with a timed call";
+    });
+    const log = { write: vi.fn() };
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths, undefined, log as any)({} as any, res, JSON.stringify({
+      session_id: "call-timing", cwd, transcript_path: transcriptPath,
+    }));
+    expect((await replied).status).toBe(200);
+    expect(log.write).toHaveBeenCalledWith("info", "summarizer.call", expect.objectContaining({
+      session_id: "call-timing", outcome: "ok", wall_ms: 9100, duration_ms: 8800, duration_api_ms: 4900,
+      input_tokens: 21000, output_tokens: 900, thinking_tokens: 0,
+    }));
+  });
 });
