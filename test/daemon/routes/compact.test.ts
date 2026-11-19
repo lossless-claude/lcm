@@ -1869,4 +1869,87 @@ describe("PreCompact reply budget", () => {
     }));
     expect((await replied).status).toBe(400);
   });
+
+  it("leaves an unforced run to the engine's thresholds", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000000");
+    try {
+      const cwd = mkdtempSync(join(tmpdir(), "lcm-unforced-"));
+      dirs.push(cwd);
+      const transcriptPath = writeBacklog(cwd, "unforced");
+      const summarize = vi.fn(async () => "unexpected summary");
+      vi.mocked(createOpenAISummarizer).mockReturnValueOnce(summarize);
+      const { res, replied } = replyRecorder();
+      await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+        session_id: "unforced", cwd, transcript_path: transcriptPath, force: false,
+      }));
+      expect((await replied).body).toMatchObject({ replayOutcome: "no_work" });
+      expect(summarize).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  async function startIncrementalRun(sessionId: string) {
+    const cwd = mkdtempSync(join(tmpdir(), `lcm-${sessionId}-`));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, sessionId);
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary of an incremental leaf";
+    });
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const incremental = handler({} as any, replyRecorder().res, JSON.stringify({
+      session_id: sessionId, cwd, transcript_path: transcriptPath, force: false,
+    }));
+    await Promise.race([entered.promise, incremental.then(() => { throw new Error("incremental run did not reach its LLM"); })]);
+    appendFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "tail after the incremental run" } }) + "\n");
+    return { cwd, transcriptPath, handler, incremental, resume };
+  }
+
+  it("lets a PreCompact wait out an incremental run, then summarize the residual", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    const run = await startIncrementalRun("wait-incremental");
+    try {
+      const { res, replied } = replyRecorder();
+      const precompact = run.handler({} as any, res, JSON.stringify({
+        session_id: "wait-incremental", cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: 600_000,
+      }));
+      const early = await Promise.race([replied.then(() => "replied"), new Promise((resolve) => setTimeout(resolve, 500, "waiting"))]);
+      expect(early).toBe("waiting");
+      run.resume.resolve();
+      await run.incremental;
+      const reply = await replied;
+      await precompact;
+      expect(reply.status).toBe(200);
+      expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+      expect(reply.body.summaryOutcome).not.toMatchObject({ reason: "busy" });
+    } finally {
+      run.resume.resolve();
+      await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it("keeps the busy skip when the budget leaves no room to wait for an incremental run", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    const run = await startIncrementalRun("no-room-incremental");
+    try {
+      const { res, replied } = replyRecorder();
+      await run.handler({} as any, res, JSON.stringify({
+        session_id: "no-room-incremental", cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: 20_000,
+      }));
+      const reply = await replied;
+      expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+      expect(reply.body.summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
+    } finally {
+      run.resume.resolve();
+      await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
 });

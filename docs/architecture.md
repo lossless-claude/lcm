@@ -917,8 +917,9 @@ and summarizer instances using that name. Its HTTP adapters admit live before ba
 and background before timeline, FIFO within each class, and leave running requests to finish.
 `/compact` classifies PreCompact as live
 from `capture_required` or OMP's `precompact_verified`; SessionEnd (including the legacy
-hook fallback) and SessionStart catch-up send `work_class: "live"` because they also use
-`skip_ingest`. Other `skip_ingest` callers, including import replay and batch compact with
+hook fallback), SessionStart catch-up and the opt-in live leaf trigger
+(`compaction.liveLeafTrigger`, which also sends `force: false`) send `work_class: "live"`
+because they also use `skip_ingest`. Other `skip_ingest` callers, including import replay and batch compact with
 or without replay, are background.
 Direct compactions default to live. `SummarizeContext.workClass` carries that choice through
 the provider chain, retries and fallback to the OpenAI and Anthropic adapters and

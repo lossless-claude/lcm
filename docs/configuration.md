@@ -1153,6 +1153,17 @@ across successive starts instead of bursting the summarizer. Set `hooks.disableA
 to turn the sweep off entirely. The request is fire-and-forget, so session start's
 latency is unaffected regardless of how large the backlog is.
 
+`compaction.liveLeafTrigger` (default `false`) compacts a running session in small
+steps instead of leaving a whole context window for PreCompact. After an `/ingest`
+that stored new messages (not an import or replay), when the raw tokens outside the
+fresh tail reach `LCM_LEAF_CHUNK_TOKENS`, the daemon sends itself an unawaited,
+unforced `/compact` for that session (`work_class: "live"`), unless the session is
+already compacting. PreCompact then finds about one leaf chunk left; if such a run
+is still in flight, it waits for it while its reply budget leaves room for one more
+call, and then summarizes the residual. The cost is a summarizer call roughly every
+`LCM_LEAF_CHUNK_TOKENS` of conversation while the session runs, and a backlog count
+on each such ingest.
+
 ### Agent worker exclusion
 
 `LCM_SUMMARIZE_WORKER=1` declares a dedicated worker at harness startup. Claude's SessionStart command hook and Codex hooks persist enrollment before agent transports may claim. Only a new `startup` or `clear` session id may enroll; resume, compact, continue and fork refuse. Retained history refuses enrollment without deletion. Capture exclusion is permanent for that session and its descendants. `lcm status`, `lcm doctor` and `lcm stats` report active, finished or abandoned enrollment and last activity. Forking worker sessions is unsupported; use a fresh dedicated session. OMP hook enrollment uses its native session-manager API; its shell and MCP identities remain unverified and refused.

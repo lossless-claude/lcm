@@ -103,7 +103,8 @@ export function buildCompactionMessage(p: {
 
 
 // A session's compaction remains in flight while its project queue turn is yielded.
-type InFlightCompaction = { sessionId: string; projectId: string; finished: Promise<void> };
+// `incremental`: an unforced run, such as the live leaf trigger's, that a PreCompact may wait out.
+type InFlightCompaction = { sessionId: string; projectId: string; incremental: boolean; finished: Promise<void> };
 const compactingNow = new Map<string, InFlightCompaction>();
 
 /**
@@ -127,12 +128,13 @@ export function compactingSessionsFor(cwd: string): string[] {
 }
 
 /** Register an in-flight compaction; returns the release function. */
-export function markCompacting(sessionId: string, cwd: string): () => void {
+export function markCompacting(sessionId: string, cwd: string, incremental = false): () => void {
   const key = compactionKey(cwd, sessionId);
   let finish!: () => void;
   const entry = {
     sessionId,
     projectId: projectId(cwd),
+    incremental,
     finished: new Promise<void>((resolve) => { finish = resolve; }),
   };
   compactingNow.set(key, entry);
@@ -140,6 +142,12 @@ export function markCompacting(sessionId: string, cwd: string): () => void {
     if (compactingNow.get(key) === entry) compactingNow.delete(key);
     finish();
   };
+}
+
+function settlesWithin(work: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<boolean>((resolve) => { timer = setTimeout(resolve, timeoutMs, false); });
+  return Promise.race([work.then(() => true), expiry]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -358,6 +366,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     if (replyBudgetMs !== undefined && (renderContext || !Number.isSafeInteger(replyBudgetMs) || (replyBudgetMs as number) <= 0)) {
       reply(400, { error: "reply_budget_ms must be a positive integer and cannot be combined with render_context" }); return;
     }
+    // Unforced runs leave the engine's own thresholds in charge; the live leaf trigger sends them.
+    if (input.force !== undefined && typeof input.force !== "boolean") {
+      reply(400, { error: "force must be a boolean" }); return;
+    }
+    const force = input.force !== false;
     const model = input.compaction_summary_model ?? DEFAULT_COMPACTION_SUMMARY_MODEL;
     const requester = renderContext && model !== "pool" && input.summary_via_requester === true;
     if (renderContext && (!validCompactionSummaryModel(model) ||
@@ -472,20 +485,25 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
     // Direct requests wait for this session's in-flight result. Deadline-bound
     // hooks and replay callers retain the busy outcome; required Capture still runs.
+    // A PreCompact with a reply budget waits out an incremental run while the budget
+    // still leaves a call for the residual, then summarizes that residual itself.
     const key = compactionKey(cwd, session_id);
-    while (compactingNow.has(key)) {
+    for (let inFlight = compactingNow.get(key); inFlight; inFlight = compactingNow.get(key)) {
+      const waitMs = captureRequired && inFlight.incremental && typeof replyBudgetMs === "number"
+        ? replyBudgetMs - (Date.now() - startedAt) - ESTIMATED_SUMMARY_CALL_MS : 0;
+      if (waitMs > 0 && await settlesWithin(inFlight.finished, waitMs)) continue;
       if (captureRequired || precompactVerified || skip_ingest) {
         await skipBusy();
         return;
       }
-      await compactingNow.get(key)!.finished;
+      await inFlight.finished;
     }
     if ((captureRequired || precompactVerified) && hasBlockingProjectWork(projectId(cwd))) {
       await skipBusy();
       return;
     }
     // Check and mark have no await between them, including after a waiter wakes.
-    const releaseCompacting = markCompacting(session_id, cwd);
+    const releaseCompacting = markCompacting(session_id, cwd, !force);
 
     const effectiveProvider = input.replay_provider ?? resolveEffectiveProvider(config, client);
     const providerLabels: Record<EffectiveProvider, string> = {
@@ -788,7 +806,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             conversationId: conversation.conversationId,
             tokenBudget: COMPACT_TOKEN_BUDGET,
             summarize: summarizeWithUsage,
-            force: true,
+            force,
             previousSummaryContent: validatedPreviousSummary,
           });
 
