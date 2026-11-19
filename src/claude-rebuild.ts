@@ -134,6 +134,12 @@ export async function planSessionRebuild(
       have.every((stored, index) => content(stored) === content(legacyKeys[index]))) {
     return { ...base, kind: "aligned" };
   }
+  // A rebuild copies the transcript, where a tokenade placeholder may stand for a tool output or
+  // input only the stored rows still hold in full; which stored row it stands for cannot be proven.
+  const folded = transcript.filter((message) => message.elided).length;
+  if (folded > 0) {
+    return { ...base, gaps, extras, kind: "ambiguous", reason: `${folded} transcript messages hold a tokenade placeholder; a rebuild would store it in place of the original` };
+  }
   const present = new Set((untagged ? [...currentKeys, ...legacyKeys].map(content) : [...currentKeys, ...legacyKeys]));
   const lost = have.filter((stored) => !present.has(untagged ? content(stored) : stored) &&
     approximateMatch(stored, current, 0, transcript.length, scrub, untagged) === undefined &&
@@ -190,31 +196,35 @@ function nextCandidate(candidates: Candidates, cursor: number): number | undefin
   return candidates.indices[candidates.next];
 }
 
-/** A transcript's messages, with the positions of those holding a NUL found once. */
+/** A transcript's messages, with the positions of those holding a NUL or a tokenade placeholder found once. */
 interface Searchable {
   messages: ParsedMessage[];
-  nul: number[];
+  inexact: number[];
 }
 
 function searchable(messages: ParsedMessage[]): Searchable {
-  return { messages, nul: messages.flatMap((m, index) => (m.content.includes("\u0000") ? [index] : [])) };
+  return {
+    messages,
+    inexact: messages.flatMap((message, index) => (message.content.includes("\u0000") || message.elided ? [index] : [])),
+  };
 }
 
 /** Search only before an exact match, preserving the earliest in-order match for legacy cut rows. */
 function approximateMatch(
-  k: string, { messages, nul }: Searchable, from: number, until: number, scrub: (text: string) => string,
+  k: string, { messages, inexact }: Searchable, from: number, until: number, scrub: (text: string) => string,
   ignoreRole = false,
-): { index: number; kind: "full" | "cut" } | undefined {
+): { index: number; kind: "full" | "cut" | "elided" } | undefined {
   const role = k.slice(0, k.indexOf("\u0000") + 1);
   const content = k.slice(role.length);
-  // Keys already compare normalized text exactly; only a redacted stored row or a transcript
-  // message holding a NUL can match any other way, so only those positions are compared.
+  // Keys already compare normalized text exactly; only a redacted stored row, or a transcript
+  // message holding a NUL or a tokenade placeholder, can match any other way, so only those
+  // positions are compared.
   const positions = content.includes(REDACTION_MARKER)
     ? Array.from({ length: Math.max(0, until - from) }, (_, offset) => from + offset)
-    : nul.slice(lowerBound(nul, from), lowerBound(nul, until));
+    : inexact.slice(lowerBound(inexact, from), lowerBound(inexact, until));
   for (const index of positions) {
     if (!ignoreRole && `${messages[index].role}\u0000` !== role) continue;
-    const kind = compareStoredMessageContent(content, messages[index].content, scrub);
+    const kind = compareStoredMessageContent(content, messages[index].content, scrub, messages[index].elided);
     if (kind) return { index, kind };
   }
   return undefined;

@@ -30,6 +30,7 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
     .option("--restart", "Discard recorded replay progress and start from scratch")
     .option("--backfill-event-times", "Fill unknown transcript event times in bounded batches, without model calls")
     .option("--rebuild", "Repair Claude history or historical NUL-cut Codex and OMP rows")
+    .option("--expand-folds", "With --provider claude --rebuild: restore stored tokenade placeholders from tokenade's stash instead")
     .option("--retry-blocked", "With --provider codex: clear terminal capture guards")
     .option("--yes", "With --rebuild: apply it (default: preview)")
     .option("--session <id>", "With --rebuild or --retry-blocked: only this session")
@@ -104,13 +105,18 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
         if (provider === "all") fail("  --rebuild requires --provider claude, codex, or omp");
         if (replay || restart) fail("  --rebuild cannot be combined with --replay or --restart; replay after the rebuild");
         if (dryRun && opts.yes) fail("  --dry-run cannot be combined with --yes");
-        const { rebuildClaudeSessions, repairCutRows } = await import("../import.js");
-        const { printRebuildSummary, printCutRepairSummary } = await import("../import-summary.js");
+        if (opts.expandFolds && provider !== "claude") fail("  --expand-folds requires --provider claude");
+        const { expandFoldedRows, rebuildClaudeSessions, repairCutRows } = await import("../import.js");
+        const { printFoldRepairSummary, printRebuildSummary, printCutRepairSummary } = await import("../import-summary.js");
         const apply = opts.yes === true;
         // A preview reads the project databases directly and never starts the daemon.
         const client = apply ? await createDaemonClientOrExit() : undefined;
         const options = { paths, all, apply, sessionId: opts.session, sensitivePatterns: config.security?.sensitivePatterns ?? [] };
-        if (provider === "claude") {
+        if (opts.expandFolds) {
+          const run = await expandFoldedRows(client, options);
+          printFoldRepairSummary(run, { apply });
+          if (run.failedProjects.length > 0 || run.sessions.some((s) => s.error)) exit(1);
+        } else if (provider === "claude") {
           const run = await rebuildClaudeSessions(client, options);
           printRebuildSummary(run, { apply });
           if (run.failedProjects.length > 0 || run.sessions.some((s) => s.error)) exit(1);
@@ -121,7 +127,9 @@ export function registerImportCommand(program: Command, deps: ImportCommandDeps)
         }
         return;
       }
-      if (opts.yes || opts.session !== undefined) fail("  --yes applies only with --rebuild; --session applies only with --rebuild or --retry-blocked");
+      if (opts.yes || opts.session !== undefined || opts.expandFolds) {
+        fail("  --yes and --expand-folds apply only with --rebuild; --session applies only with --rebuild or --retry-blocked");
+      }
       const port = config.daemon?.port ?? 3737;
       const previewClient = new DaemonClient(`http://127.0.0.1:${port}`, paths.tokenPath);
       const preview = await importSessions(previewClient, { paths, all, provider, dryRun: true, verbose: dryRun && verbose, replay, backfillEventTimes: opts.backfillEventTimes });

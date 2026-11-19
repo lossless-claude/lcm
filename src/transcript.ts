@@ -1,6 +1,7 @@
 import { isWorkerClaim, workerPayloadJobIds } from "./worker-markers.js";
 import { isCompactionContext } from "./compaction-context.js";
 import { transcriptToolInvocation, transcriptToolResult, type TranscriptToolCall } from "./tool-calls.js";
+import { isTokenadeFold } from "./message-content.js";
 import { readFileSync } from "node:fs";
 
 /** Bump when the Claude parser changes the rows or fields a transcript yields. */
@@ -54,6 +55,8 @@ export interface ParsedMessage {
   workerClaims?: string[];
   /** A successful claim's result: the call it answers and the job id it carries. */
   workerPayloads?: WorkerPayload[];
+  /** Tokenade folded a tool output or input this entry carries; a stored copy may be the only full one. */
+  elided?: boolean;
 }
 
 /** Accept only an explicit timestamp with a timezone; never use the current clock. */
@@ -203,11 +206,83 @@ function toolUseModels(obj: TranscriptLine): Map<string, string> {
   return models;
 }
 
+/**
+ * Tokenade's cold-resume trim folds a dead call's long input values as well as long results.
+ * Walked without recursion: an input nested deeper than the stack must not drop its entry.
+ */
+function holdsFoldedValue(input: unknown): boolean {
+  const pending = [input];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "string") {
+      if (isTokenadeFold(value)) return true;
+    } else if (typeof value === "object" && value !== null) {
+      for (const nested of Object.values(value)) pending.push(nested);
+    }
+  }
+  return false;
+}
+
+/** Tokenade folds each text part of a result on its own. */
+function holdsFoldedOutput(content: ContentBlock["content"]): boolean {
+  if (typeof content === "string") return isTokenadeFold(content);
+  return Array.isArray(content) && content.some((part) =>
+    part.type === "text" && typeof part.text === "string" && isTokenadeFold(part.text));
+}
+
+// The record each folded message was parsed from, so its folds can be restored without a re-read.
+const foldedRecords = new WeakMap<ParsedMessage, string>();
+
+/**
+ * The record `message` was parsed from with every value tokenade folded, in the places the parser
+ * marks (`holdsFoldedValue`, `holdsFoldedOutput`), replaced by `restore`'s original, then parsed
+ * again. Undefined unless `message` is folded and every one of its folds was restored.
+ */
+export function unfoldClaudeMessage(message: ParsedMessage, restore: (folded: string) => string | undefined):
+  ReturnType<typeof parseClaudeTranscriptRecord> | undefined {
+  const record = foldedRecords.get(message);
+  if (record === undefined) return undefined;
+  const entry: TranscriptLine = JSON.parse(record);
+  let missing = false;
+  const unfold = (value: string): string => {
+    if (!isTokenadeFold(value)) return value;
+    const original = restore(value);
+    if (original === undefined) missing = true;
+    return original ?? value;
+  };
+  for (const block of blocksOf(entry.message?.content)) {
+    if (block.type === "tool_use" && block.id) {
+      const pending: unknown[] = [block.input];
+      while (pending.length > 0) {
+        const value = pending.pop();
+        if (typeof value !== "object" || value === null) continue;
+        const holder = value as Record<string, unknown>;
+        for (const key of Object.keys(holder)) {
+          if (typeof holder[key] === "string") holder[key] = unfold(holder[key]);
+          else pending.push(holder[key]);
+        }
+      }
+    } else if (block.type === "tool_result" && block.tool_use_id) {
+      if (typeof block.content === "string") block.content = unfold(block.content);
+      else if (Array.isArray(block.content)) {
+        for (const part of block.content) if (part.type === "text" && typeof part.text === "string") part.text = unfold(part.text);
+      }
+    }
+  }
+  return missing ? undefined : parseClaudeTranscriptRecord(JSON.stringify(entry));
+}
+
 function claudeToolCalls(blocks: ContentBlock[], message?: ParsedMessage): TranscriptToolCall[] {
   return blocks.flatMap(block => {
-    if (block.type === "tool_use" && block.id) return [transcriptToolInvocation(block.id, block.name || "tool_use", block.input, message)];
-    if (block.type === "tool_result" && block.tool_use_id) return [{ ...transcriptToolResult(block.tool_use_id, "claude",
-      { output: extractText(block.content), error: block.is_error }), message }];
+    if (block.type === "tool_use" && block.id) {
+      const call = transcriptToolInvocation(block.id, block.name || "tool_use", block.input, message);
+      return [holdsFoldedValue(block.input) ? { ...call, elided: true } : call];
+    }
+    if (block.type === "tool_result" && block.tool_use_id) {
+      const output = extractText(block.content);
+      return [{ ...transcriptToolResult(block.tool_use_id, "claude", { output, error: block.is_error }), message,
+        ...(holdsFoldedOutput(block.content) ? { elided: true } : {}) }];
+    }
     return [];
   });
 }
@@ -245,6 +320,10 @@ export function parseClaudeTranscriptRecord(record: string, toolShape: "current"
     const message: ParsedMessage = { role, content, tokenCount: estimateTokens(content), ...(eventAt ? { eventAt } : {}), ...(parts.length ? { parts } : {}),
       ...(workerClaims.length ? { workerClaims } : {}), ...(workerPayloads.length ? { workerPayloads } : {}) };
     const toolCalls = claudeToolCalls(blocks, message);
+    if (toolCalls.some(call => call.elided)) {
+      message.elided = true;
+      foldedRecords.set(message, record);
+    }
     return { message, toolUseModels: models, ...(toolCalls.length ? { toolCalls } : {}) };
   } catch {
     // Claude's existing full parser skips malformed entries.

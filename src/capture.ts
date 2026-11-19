@@ -30,6 +30,7 @@ import { recordSessionWebUrls } from "./store/session-url-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
 import { CLAUDE_PARSER_SHAPE, parseTranscript, transcriptEventTime, type MessagePart, type ParsedMessage, type SessionUrlDeclaration } from "./transcript.js";
 import { clearConversationForRebuild, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
+import type { FoldedRows } from "./tokenade-folds.js";
 import {
   transcriptSource,
   TranscriptSourceError,
@@ -110,6 +111,8 @@ export interface TranscriptCaptureResult extends CaptureResult {
   verification?: { verified: boolean; complete: boolean; boundaryFound: boolean; boundaryScanExceeded?: boolean };
   /** The transcript that was read, as the adapter located it. */
   transcriptPath: string;
+  /** Tokenade-folded transcript rows this read held past the stored history, restored from tokenade's stash or kept folded. */
+  folds?: FoldedRows;
   /** Fills the model on the session's events whose hook payload could not carry one. */
   backfillModels(events: EventsDb): void;
 }
@@ -221,7 +224,7 @@ export class SessionCapture {
     }
     const stored = await this.stored(input.sessionId);
     const delta = await source.read(transcriptPath, stored && this.storedTranscript(source, input.sessionId, stored, transcriptPath), {
-      ...input, scrub: (text) => this.scrubber.scrubWithCounts(text).text, redactionKey: this.scrubber.rulesKey,
+      ...input, scrub: (text) => this.scrubber.scrubWithCounts(text).text, redactionKey: this.scrubber.rulesKey, expandFolds: true,
     }).catch(error => {
       if (error instanceof TranscriptSourceError && error.terminal && source.client === "codex" && this.paths) {
         rememberSubagentGuard(input.cwd, this.paths, transcriptPath, subagentGuardFingerprint(transcriptPath),
@@ -258,7 +261,7 @@ export class SessionCapture {
     });
     const databases = this.db.prepare("PRAGMA database_list").all() as Array<{ name: string; file: string }>;
     const dbPath = databases.find(row => row.name === "main")!.file;
-    return { ...written, transcriptPath, ...(delta.verification ? { verification: {
+    return { ...written, transcriptPath, ...(delta.folds ? { folds: delta.folds } : {}), ...(delta.verification ? { verification: {
       ...delta.verification, verified: delta.verification.verified && written.conversationId > 0,
     } } : {}), backfillModels: (events) => {
       if (!source.backfillModels || delta.checkpoint === undefined) return delta.backfillModels(events, input.sessionId);

@@ -136,3 +136,23 @@ export function printCutRepairSummary(
   console.log(`  ${run.sessions.length} ${opts.provider} sessions checked; ${cutRows} cut rows found; ${repaired} repaired.`);
   if (!opts.apply) console.log(cutRows ? "  No changes written; rerun with --yes to repair." : "  Nothing to repair. No changes written.");
 }
+
+/** `lcm import --provider claude --rebuild --expand-folds`: each session holding a placeholder, then the totals. */
+export function printFoldRepairSummary(run: import("./import.js").FoldRepairRunResult, opts: { apply: boolean }): void {
+  const found = { rows: 0, calls: 0, kept: 0 };
+  let repaired = 0;
+  for (const report of run.sessions) {
+    const { plan } = report;
+    found.rows += plan.rows.length;
+    found.calls += plan.calls.length;
+    found.kept += plan.kept;
+    repaired += report.repaired ?? 0;
+    const detail = ` — ${plan.rows.length} rows, ${plan.calls.length} call inputs restorable; ${plan.kept} kept`;
+    console.log(`  ${plan.kind.padEnd(11)} ${plan.sessionId}${detail}${plan.reason ? ` (${plan.reason})` : ""}${report.error ? `; failed: ${report.error}` : ""}  [${report.cwd}]`);
+    if (report.backupPath) console.log(`  Backup: ${report.backupPath}`);
+    for (const removed of report.removedBackups ?? []) console.log(`  Removed older backup: ${removed}`);
+  }
+  for (const { cwd, error } of run.failedProjects) console.log(`  Not repaired in ${cwd}: ${error}`);
+  console.log(`  ${run.sessions.length} Claude Code sessions hold tokenade placeholders: ${found.rows} rows and ${found.calls} tool-call inputs restorable from the stash, ${found.kept} kept; ${repaired} restored.`);
+  if (!opts.apply) console.log(found.rows + found.calls ? "  No changes written; rerun with --yes to restore them." : "  Nothing to restore. No changes written.");
+}

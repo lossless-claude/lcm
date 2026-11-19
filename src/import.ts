@@ -16,6 +16,7 @@ import { discoverSubagentTranscripts, type SubagentAttribution } from "./subagen
 import { isSessionComplete } from "./capture.js";
 import { claudeRebuildCandidateIds, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
 import { planCutRowRepair, type CutRepairClient, type CutRowRepairPlan } from "./cut-row-repair.js";
+import { foldRepairCandidateIds, planFoldRepair, tokenadeStash, type FoldRepairPlan } from "./tokenade-folds.js";
 import { ScrubEngine } from "./scrub.js";
 import { parseTranscript } from "./transcript.js";
 import {
@@ -1016,6 +1017,82 @@ export async function repairCutRows(
       }
     } catch (error) {
       result.failedProjects.push({ cwd, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
+}
+
+export interface FoldRepairRunResult {
+  sessions: Array<{ cwd: string; transcriptPath?: string; plan: FoldRepairPlan; repaired?: number; backupPath?: string; removedBackups?: string[]; error?: string }>;
+  failedProjects: Array<{ cwd: string; error: string }>;
+}
+
+/**
+ * Finds stored Claude Code rows and tool-call inputs that hold a tokenade placeholder, per
+ * project, from the project database opened read-only and the session's transcript, with their
+ * originals in tokenade's stash. With `apply`, the daemon plans each session again under the
+ * project lease and writes it, backing the project database up with the first one.
+ */
+export async function expandFoldedRows(client: DaemonClient | undefined, options: RebuildOptions): Promise<FoldRepairRunResult> {
+  const result: FoldRepairRunResult = { sessions: [], failedProjects: [] };
+  const claudeProjectsDir = options._claudeProjectsDir ?? join(homedir(), ".claude", "projects");
+  const cwds = options.all ? [...new Set(buildProjectMap(options.paths).values())] : [options.cwd ?? process.cwd()];
+  for (const cwd of cwds) {
+    const dbPath = projectDbPath(cwd, options.paths);
+    if (!existsSync(dbPath)) continue;
+    const reports: FoldRepairRunResult["sessions"] = [];
+    try {
+      const transcripts = new Map(findSessionFiles(join(claudeProjectsDir, claudeProjectSlug(cwd))).map((file) => [file.sessionId, file.path]));
+      const scrubber = await ScrubEngine.forProject(options.sensitivePatterns ?? [], projectDir(cwd, options.paths));
+      const scrub = (text: string) => scrubber.scrubWithCounts(text).text;
+      const read = tokenadeStash();
+      const db = getLcmConnection(dbPath, { readOnly: true });
+      try {
+        for (const sessionId of foldRepairCandidateIds(db)) {
+          if (options.sessionId !== undefined && sessionId !== options.sessionId) continue;
+          let transcriptPath = transcripts.get(sessionId);
+          let plan = await planFoldRepair(db, { sessionId, transcriptPath, scrub, read });
+          // A session can be stored under a project other than the one whose folder holds its transcript.
+          if (plan.kind === "unavailable" && transcriptPath === undefined) {
+            transcriptPath = readdirSync(claudeProjectsDir, { withFileTypes: true })
+              .map((entry) => join(claudeProjectsDir, entry.name, `${sessionId}.jsonl`))
+              .find((path) => existsSync(path));
+            if (transcriptPath) plan = await planFoldRepair(db, { sessionId, transcriptPath, scrub, read });
+          }
+          if (plan.kind !== "aligned" || plan.kept > 0) reports.push({ cwd, transcriptPath, plan });
+        }
+      } finally {
+        closeLcmConnection(dbPath, { readOnly: true });
+      }
+    } catch (error) {
+      result.failedProjects.push({ cwd, error: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
+    result.sessions.push(...reports);
+    if (!options.apply || !client) continue;
+    let backedUp = false;
+    for (const report of reports) {
+      if (report.plan.kind !== "repairable") continue;
+      try {
+        const applied = await client.post<{ repair: FoldRepairPlan; repaired: number; backupPath?: string; removedBackups?: string[] }>("/ingest", {
+          session_id: report.plan.sessionId, cwd, transcript_path: report.transcriptPath, source: "import", client: "claude",
+          rebuild: true, expand_folds: true, ...(backedUp ? {} : { backup: true }),
+        });
+        // A daemon older than this flag takes the request for a rebuild and answers without a repair.
+        if (applied.repair === undefined) throw new Error("the running daemon does not support --expand-folds; restart it on this lcm build");
+        report.plan = applied.repair;
+        report.repaired = applied.repaired;
+        report.backupPath = applied.backupPath;
+        report.removedBackups = applied.removedBackups;
+        if (applied.backupPath) backedUp = true;
+      } catch (error) {
+        report.error = error instanceof Error ? error.message : String(error);
+        // Without a backup nothing else in this project is written.
+        if (!backedUp) {
+          result.failedProjects.push({ cwd, error: report.error });
+          break;
+        }
+      }
     }
   }
   return result;
