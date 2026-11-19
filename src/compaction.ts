@@ -408,7 +408,7 @@ export class CompactionEngine {
    * Counts message tokens outside the protected fresh tail and compares against
    * `leafChunkTokens`.
    */
-  private async evaluateLeafTrigger(conversationId: number): Promise<{
+  async evaluateLeafTrigger(conversationId: number): Promise<{
     shouldCompact: boolean;
     rawTokensOutsideTail: number;
     threshold: number;

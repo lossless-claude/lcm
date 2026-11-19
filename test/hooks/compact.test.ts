@@ -23,6 +23,15 @@ describe("handlePreCompact", () => {
     expect(client.post).toHaveBeenCalledWith("/compact", expect.anything(), { timeoutMs: 115_000 });
   });
 
+  it("asks the daemon to answer within the request deadline and prints nothing for a deferred summary", async () => {
+    mockEnsureDaemon.mockResolvedValue({ connected: true, port, spawned: false });
+    const client = { post: vi.fn().mockResolvedValue({ summary: "", captureOutcome: { status: "completed", messages: 3 },
+      summaryOutcome: { status: "deferred", reason: "over-budget" } }) };
+    const result = await handlePreCompact(JSON.stringify({ session_id: "s1", cwd: "/proj" }), client as any, paths, port);
+    expect(client.post).toHaveBeenCalledWith("/compact", expect.objectContaining({ reply_budget_ms: 110_000 }), { timeoutMs: 115_000 });
+    expect(result).toEqual({ exitCode: 0, stdout: "" });
+  });
+
   it("returns exitCode 0 and summary when daemon healthy", async () => {
     mockEnsureDaemon.mockResolvedValue({ connected: true, port: 3737, spawned: false });
     const client = { health: vi.fn(), post: vi.fn().mockResolvedValue({ summary: "Compacted 500 tokens" }) };

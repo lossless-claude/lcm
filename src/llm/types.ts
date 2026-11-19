@@ -50,6 +50,22 @@ export type SummarizerUsage = {
   rejectionReason?: "length" | "max_tokens" | "whitespace";
 };
 
+/** One content-free timing record per model process call, failed and timed-out calls included. */
+export type SummarizerCallTiming = {
+  provider: string;
+  model: string;
+  outcome: "ok" | "error" | "timeout";
+  /** Spawn to exit, as the daemon measured it. */
+  wallMs: number;
+  /** Reported by the process, when its result parsed. */
+  durationMs?: number;
+  durationApiMs?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** The part of `outputTokens` spent on extended thinking. */
+  thinkingTokens?: number;
+};
+
 export type SummarizeContext = {
   /** Error→fix pairs and block reasons derived from this leaf's source messages. */
   toolContext?: ToolSummaryContext;
@@ -75,6 +91,7 @@ export type SummarizeContext = {
   onUsage?: (usage: SummarizerUsage) => void;
   /** One content-free measurement per cut answer, including answers without usage. */
   onCut?: (diagnostic: SummaryCutDiagnostic) => void;
+  onCallTiming?: (timing: SummarizerCallTiming) => void;
   /**
    * A chain link is about to run: its name (the usage label it reports under), how it
    * reaches its model, and the model it is configured with. Fires even for a link whose

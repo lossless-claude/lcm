@@ -1782,3 +1782,195 @@ describe("replay restart during compaction", () => {
     expect(response.getBody()).toEqual({ error });
   });
 });
+
+describe("PreCompact reply budget", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeBacklog(cwd: string, sessionId: string): string {
+    const transcriptPath = join(cwd, `${sessionId}.jsonl`);
+    writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    return transcriptPath;
+  }
+
+  function replyRecorder() {
+    const replied = Promise.withResolvers<{ status: number; body: Record<string, unknown> }>();
+    let status = 0;
+    const res = {
+      writeHead: vi.fn((code: number) => { status = code; return res; }),
+      end: vi.fn((data?: string) => { replied.resolve({ status, body: JSON.parse(data || "{}") }); }),
+    } as any;
+    return { res, replied: replied.promise };
+  }
+
+  it("answers 202 after Capture when the estimated summary cannot fit, then finishes the summary", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-deferred-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "deferred");
+    const resume = Promise.withResolvers<void>();
+    let calls = 0;
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      calls += 1;
+      await resume.promise;
+      return "summary of the deferred backlog";
+    });
+    const { res, replied } = replyRecorder();
+    const compacting = createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "deferred", cwd, transcript_path: transcriptPath, capture_required: true, reply_budget_ms: 1_000,
+    }));
+    try {
+      const reply = await Promise.race([replied, compacting.then(() => { throw new Error("handler ended before replying"); })]);
+      expect(reply.status).toBe(202);
+      expect(reply.body).toMatchObject({
+        captureOutcome: { status: "completed", messages: 20 },
+        summaryOutcome: { status: "deferred", reason: "over-budget" },
+      });
+      expect(await readMessageCount(cwd, "deferred")).toBe(20);
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+    expect(calls).toBeGreaterThan(0);
+    expect(res.end).toHaveBeenCalledTimes(1);
+    expect(await readSummaryCount(cwd, "deferred")).toBeGreaterThan(0);
+    const observations = new EventsDb(eventsDbPath(cwd, paths));
+    try {
+      expect(observations.getHookObservationSummary("deferred")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "summary", status: "completed", count: 1 }),
+      ]));
+    } finally {
+      observations.close();
+    }
+  }, 10_000);
+
+  it("waits for the summary when the estimate fits the budget", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-in-budget-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "in-budget");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => "summary within the budget");
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "in-budget", cwd, transcript_path: transcriptPath, capture_required: true, reply_budget_ms: 600_000,
+    }));
+    const reply = await replied;
+    expect(reply.status).toBe(200);
+    expect(reply.body.summaryOutcome).toMatchObject({ status: "completed" });
+  });
+
+  it.each([0, -1, 1.5, "110000"])("rejects reply_budget_ms %j", async (budget) => {
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "bad-budget", cwd: tmpdir(), capture_required: true, reply_budget_ms: budget,
+    }));
+    expect((await replied).status).toBe(400);
+  });
+
+  it("leaves an unforced run to the engine's thresholds", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000000");
+    try {
+      const cwd = mkdtempSync(join(tmpdir(), "lcm-unforced-"));
+      dirs.push(cwd);
+      const transcriptPath = writeBacklog(cwd, "unforced");
+      const summarize = vi.fn(async () => "unexpected summary");
+      vi.mocked(createOpenAISummarizer).mockReturnValueOnce(summarize);
+      const { res, replied } = replyRecorder();
+      await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+        session_id: "unforced", cwd, transcript_path: transcriptPath, force: false,
+      }));
+      expect((await replied).body).toMatchObject({ replayOutcome: "no_work" });
+      expect(summarize).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  async function startIncrementalRun(sessionId: string) {
+    const cwd = mkdtempSync(join(tmpdir(), `lcm-${sessionId}-`));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, sessionId);
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary of an incremental leaf";
+    });
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const incremental = handler({} as any, replyRecorder().res, JSON.stringify({
+      session_id: sessionId, cwd, transcript_path: transcriptPath, force: false,
+    }));
+    await Promise.race([entered.promise, incremental.then(() => { throw new Error("incremental run did not reach its LLM"); })]);
+    appendFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "tail after the incremental run" } }) + "\n");
+    return { cwd, transcriptPath, handler, incremental, resume };
+  }
+
+  it("lets a PreCompact wait out an incremental run, then summarize the residual", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    const run = await startIncrementalRun("wait-incremental");
+    try {
+      const { res, replied } = replyRecorder();
+      const precompact = run.handler({} as any, res, JSON.stringify({
+        session_id: "wait-incremental", cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: 600_000,
+      }));
+      const early = await Promise.race([replied.then(() => "replied"), new Promise((resolve) => setTimeout(resolve, 500, "waiting"))]);
+      expect(early).toBe("waiting");
+      run.resume.resolve();
+      await run.incremental;
+      const reply = await replied;
+      await precompact;
+      expect(reply.status).toBe(200);
+      expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+      expect(reply.body.summaryOutcome).not.toMatchObject({ reason: "busy" });
+    } finally {
+      run.resume.resolve();
+      await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it("keeps the busy skip when the budget leaves no room to wait for an incremental run", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    const run = await startIncrementalRun("no-room-incremental");
+    try {
+      const { res, replied } = replyRecorder();
+      await run.handler({} as any, res, JSON.stringify({
+        session_id: "no-room-incremental", cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: 20_000,
+      }));
+      const reply = await replied;
+      expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+      expect(reply.body.summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
+    } finally {
+      run.resume.resolve();
+      await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it("logs each summarizer call's timing", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-call-timing-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "call-timing");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async (_text, _aggressive, ctx) => {
+      ctx?.onCallTiming?.({ provider: "claude-process", model: "haiku", outcome: "ok", wallMs: 9100, durationMs: 8800,
+        durationApiMs: 4900, inputTokens: 21000, outputTokens: 900, thinkingTokens: 0 });
+      return "summary with a timed call";
+    });
+    const log = { write: vi.fn() };
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths, undefined, log as any)({} as any, res, JSON.stringify({
+      session_id: "call-timing", cwd, transcript_path: transcriptPath,
+    }));
+    expect((await replied).status).toBe(200);
+    expect(log.write).toHaveBeenCalledWith("info", "summarizer.call", expect.objectContaining({
+      session_id: "call-timing", outcome: "ok", wall_ms: 9100, duration_ms: 8800, duration_api_ms: 4900,
+      input_tokens: 21000, output_tokens: 900, thinking_tokens: 0,
+    }));
+  });
+});

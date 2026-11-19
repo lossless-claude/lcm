@@ -30,6 +30,10 @@ Invoked by Claude Code before it runs its built-in compaction. The daemon attemp
 
 **Response:** Exit code `0`. Summary text on stdout when the daemon compacted; empty stdout to defer.
 
+### Reply budget
+
+The hook sends `reply_budget_ms` (110000: its 115s request deadline less 5s for the reply). After Capture the daemon estimates the summary's model calls as one per `LCM_LEAF_CHUNK_TOKENS` of raw tokens outside the fresh tail, plus one condensed call, at a heuristic 30s each. When that exceeds what is left of the budget, it answers HTTP 202 with `summaryOutcome: { status: "deferred", reason: "over-budget" }`, logs `precompact.deferred`, and keeps compacting after the reply; the hook counts the delivery as accepted and prints nothing. The hook outcomes are recorded when that work ends. A request without the field waits for the summary. The field must be a positive integer and cannot be combined with `render_context`.
+
 ### Complete compaction context
 
 `POST /compact` can return a complete conversation window after Capture and a summary sweep.

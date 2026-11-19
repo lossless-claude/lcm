@@ -103,8 +103,16 @@ export function buildCompactionMessage(p: {
 
 
 // A session's compaction remains in flight while its project queue turn is yielded.
-type InFlightCompaction = { sessionId: string; projectId: string; finished: Promise<void> };
+// `incremental`: an unforced run, such as the live leaf trigger's, that a PreCompact may wait out.
+type InFlightCompaction = { sessionId: string; projectId: string; incremental: boolean; finished: Promise<void> };
 const compactingNow = new Map<string, InFlightCompaction>();
+
+/**
+ * Heuristic, not a measurement of the run at hand: one summarizer call (a process
+ * spawn and a leaf-sized prompt) commonly takes about half a minute. Only the order
+ * of magnitude matters to `reply_budget_ms`.
+ */
+const ESTIMATED_SUMMARY_CALL_MS = 30_000;
 
 function compactionKey(cwd: string, sessionId: string): string {
   return JSON.stringify([projectId(cwd), sessionId]);
@@ -120,12 +128,13 @@ export function compactingSessionsFor(cwd: string): string[] {
 }
 
 /** Register an in-flight compaction; returns the release function. */
-export function markCompacting(sessionId: string, cwd: string): () => void {
+export function markCompacting(sessionId: string, cwd: string, incremental = false): () => void {
   const key = compactionKey(cwd, sessionId);
   let finish!: () => void;
   const entry = {
     sessionId,
     projectId: projectId(cwd),
+    incremental,
     finished: new Promise<void>((resolve) => { finish = resolve; }),
   };
   compactingNow.set(key, entry);
@@ -133,6 +142,12 @@ export function markCompacting(sessionId: string, cwd: string): () => void {
     if (compactingNow.get(key) === entry) compactingNow.delete(key);
     finish();
   };
+}
+
+function settlesWithin(work: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<boolean>((resolve) => { timer = setTimeout(resolve, timeoutMs, false); });
+  return Promise.race([work.then(() => true), expiry]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -321,6 +336,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
   };
 
   return async (_req, res, body) => {
+    const startedAt = Date.now();
     const input = JSON.parse(body || "{}");
     const controller = new AbortController();
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -344,6 +360,17 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         typeof input.capture_through_uuid !== "string" || !input.capture_through_uuid.trim() || input.capture_through_uuid.length > 140)) {
       reply(400, { error: "render_context requires Claude Capture, a UUID boundary and a byte budget of 1..65536" }); return;
     }
+    // The caller's wait for a summary. A run estimated not to fit is answered 202 once
+    // captured and keeps compacting after the reply.
+    const replyBudgetMs: unknown = input.reply_budget_ms;
+    if (replyBudgetMs !== undefined && (renderContext || !Number.isSafeInteger(replyBudgetMs) || (replyBudgetMs as number) <= 0)) {
+      reply(400, { error: "reply_budget_ms must be a positive integer and cannot be combined with render_context" }); return;
+    }
+    // Unforced runs leave the engine's own thresholds in charge; the live leaf trigger sends them.
+    if (input.force !== undefined && typeof input.force !== "boolean") {
+      reply(400, { error: "force must be a boolean" }); return;
+    }
+    const force = input.force !== false;
     const model = input.compaction_summary_model ?? DEFAULT_COMPACTION_SUMMARY_MODEL;
     const requester = renderContext && model !== "pool" && input.summary_via_requester === true;
     if (renderContext && (!validCompactionSummaryModel(model) ||
@@ -458,20 +485,25 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
     // Direct requests wait for this session's in-flight result. Deadline-bound
     // hooks and replay callers retain the busy outcome; required Capture still runs.
+    // A PreCompact with a reply budget waits out an incremental run while the budget
+    // still leaves a call for the residual, then summarizes that residual itself.
     const key = compactionKey(cwd, session_id);
-    while (compactingNow.has(key)) {
+    for (let inFlight = compactingNow.get(key); inFlight; inFlight = compactingNow.get(key)) {
+      const waitMs = captureRequired && inFlight.incremental && typeof replyBudgetMs === "number"
+        ? replyBudgetMs - (Date.now() - startedAt) - ESTIMATED_SUMMARY_CALL_MS : 0;
+      if (waitMs > 0 && await settlesWithin(inFlight.finished, waitMs)) continue;
       if (captureRequired || precompactVerified || skip_ingest) {
         await skipBusy();
         return;
       }
-      await compactingNow.get(key)!.finished;
+      await inFlight.finished;
     }
     if ((captureRequired || precompactVerified) && hasBlockingProjectWork(projectId(cwd))) {
       await skipBusy();
       return;
     }
     // Check and mark have no await between them, including after a waiter wakes.
-    const releaseCompacting = markCompacting(session_id, cwd);
+    const releaseCompacting = markCompacting(session_id, cwd, !force);
 
     const effectiveProvider = input.replay_provider ?? resolveEffectiveProvider(config, client);
     const providerLabels: Record<EffectiveProvider, string> = {
@@ -609,6 +641,19 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             };
           }
 
+          if (typeof replyBudgetMs === "number") {
+            const backlog = await new CompactionEngine(conversationStore, summaryStore, compactEngineConfig())
+              .evaluateLeafTrigger(conversation.conversationId);
+            // Leaf calls, plus one condensed call.
+            const estimatedCalls = Math.ceil(backlog.rawTokensOutsideTail / backlog.threshold) + 1;
+            const remainingMs = replyBudgetMs - (Date.now() - startedAt);
+            if (estimatedCalls * ESTIMATED_SUMMARY_CALL_MS > remainingMs) {
+              log.write("info", "precompact.deferred", { cwd, session_id, estimated_calls: estimatedCalls,
+                raw_tokens: backlog.rawTokensOutsideTail, remaining_ms: remainingMs });
+              reply(202, { summary: "", captureOutcome, summaryOutcome: { status: "deferred", reason: "over-budget" } });
+            }
+          }
+
           let language = resolveSummarizerLanguage(config, cwd, paths);
           if (language === undefined) {
             const detection = scheduleProjectLanguageDetection(cwd, db, config, paths, client);
@@ -694,6 +739,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   log.write("warn", "summarizer.cut", { cwd, session_id, provider, model, reason,
                     max_output_tokens: maxOutputTokens, output_tokens: outputTokens ?? null, tail_repetition: tailRepetition });
                 },
+                onCallTiming: ({ provider, model, outcome, wallMs, durationMs, durationApiMs, inputTokens, outputTokens, thinkingTokens }) => {
+                  log.write("info", "summarizer.call", { cwd, session_id, provider, model, outcome, wall_ms: wallMs,
+                    duration_ms: durationMs ?? null, duration_api_ms: durationApiMs ?? null, input_tokens: inputTokens ?? null,
+                    output_tokens: outputTokens ?? null, thinking_tokens: thinkingTokens ?? null });
+                },
                 onFallback: ({ reason, fromProvider, toProvider }) => {
                   if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
               settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
@@ -761,7 +811,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             conversationId: conversation.conversationId,
             tokenBudget: COMPACT_TOKEN_BUDGET,
             summarize: summarizeWithUsage,
-            force: true,
+            force,
             previousSummaryContent: validatedPreviousSummary,
           });
 
