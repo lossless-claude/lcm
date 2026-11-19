@@ -1782,3 +1782,91 @@ describe("replay restart during compaction", () => {
     expect(response.getBody()).toEqual({ error });
   });
 });
+
+describe("PreCompact reply budget", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeBacklog(cwd: string, sessionId: string): string {
+    const transcriptPath = join(cwd, `${sessionId}.jsonl`);
+    writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    return transcriptPath;
+  }
+
+  function replyRecorder() {
+    const replied = Promise.withResolvers<{ status: number; body: Record<string, unknown> }>();
+    let status = 0;
+    const res = {
+      writeHead: vi.fn((code: number) => { status = code; return res; }),
+      end: vi.fn((data?: string) => { replied.resolve({ status, body: JSON.parse(data || "{}") }); }),
+    } as any;
+    return { res, replied: replied.promise };
+  }
+
+  it("answers 202 after Capture when the estimated summary cannot fit, then finishes the summary", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-deferred-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "deferred");
+    const resume = Promise.withResolvers<void>();
+    let calls = 0;
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      calls += 1;
+      await resume.promise;
+      return "summary of the deferred backlog";
+    });
+    const { res, replied } = replyRecorder();
+    const compacting = createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "deferred", cwd, transcript_path: transcriptPath, capture_required: true, reply_budget_ms: 1_000,
+    }));
+    try {
+      const reply = await Promise.race([replied, compacting.then(() => { throw new Error("handler ended before replying"); })]);
+      expect(reply.status).toBe(202);
+      expect(reply.body).toMatchObject({
+        captureOutcome: { status: "completed", messages: 20 },
+        summaryOutcome: { status: "deferred", reason: "over-budget" },
+      });
+      expect(await readMessageCount(cwd, "deferred")).toBe(20);
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+    expect(calls).toBeGreaterThan(0);
+    expect(res.end).toHaveBeenCalledTimes(1);
+    expect(await readSummaryCount(cwd, "deferred")).toBeGreaterThan(0);
+    const observations = new EventsDb(eventsDbPath(cwd, paths));
+    try {
+      expect(observations.getHookObservationSummary("deferred")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "summary", status: "completed", count: 1 }),
+      ]));
+    } finally {
+      observations.close();
+    }
+  }, 10_000);
+
+  it("waits for the summary when the estimate fits the budget", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-in-budget-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "in-budget");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => "summary within the budget");
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "in-budget", cwd, transcript_path: transcriptPath, capture_required: true, reply_budget_ms: 600_000,
+    }));
+    const reply = await replied;
+    expect(reply.status).toBe(200);
+    expect(reply.body.summaryOutcome).toMatchObject({ status: "completed" });
+  });
+
+  it.each([0, -1, 1.5, "110000"])("rejects reply_budget_ms %j", async (budget) => {
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "bad-budget", cwd: tmpdir(), capture_required: true, reply_budget_ms: budget,
+    }));
+    expect((await replied).status).toBe(400);
+  });
+});

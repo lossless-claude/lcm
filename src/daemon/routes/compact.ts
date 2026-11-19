@@ -106,6 +106,13 @@ export function buildCompactionMessage(p: {
 type InFlightCompaction = { sessionId: string; projectId: string; finished: Promise<void> };
 const compactingNow = new Map<string, InFlightCompaction>();
 
+/**
+ * Heuristic, not a measurement of the run at hand: one summarizer call (a process
+ * spawn and a leaf-sized prompt) commonly takes about half a minute. Only the order
+ * of magnitude matters to `reply_budget_ms`.
+ */
+const ESTIMATED_SUMMARY_CALL_MS = 30_000;
+
 function compactionKey(cwd: string, sessionId: string): string {
   return JSON.stringify([projectId(cwd), sessionId]);
 }
@@ -321,6 +328,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
   };
 
   return async (_req, res, body) => {
+    const startedAt = Date.now();
     const input = JSON.parse(body || "{}");
     const controller = new AbortController();
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -343,6 +351,12 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         !Number.isSafeInteger(input.context_budget_bytes) || input.context_budget_bytes <= 0 || input.context_budget_bytes > 65_536 ||
         typeof input.capture_through_uuid !== "string" || !input.capture_through_uuid.trim() || input.capture_through_uuid.length > 140)) {
       reply(400, { error: "render_context requires Claude Capture, a UUID boundary and a byte budget of 1..65536" }); return;
+    }
+    // The caller's wait for a summary. A run estimated not to fit is answered 202 once
+    // captured and keeps compacting after the reply.
+    const replyBudgetMs: unknown = input.reply_budget_ms;
+    if (replyBudgetMs !== undefined && (renderContext || !Number.isSafeInteger(replyBudgetMs) || (replyBudgetMs as number) <= 0)) {
+      reply(400, { error: "reply_budget_ms must be a positive integer and cannot be combined with render_context" }); return;
     }
     const model = input.compaction_summary_model ?? DEFAULT_COMPACTION_SUMMARY_MODEL;
     const requester = renderContext && model !== "pool" && input.summary_via_requester === true;
@@ -607,6 +621,19 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               captureOutcome,
               summaryOutcome: { status: "skipped" as const, reason: "disabled" },
             };
+          }
+
+          if (typeof replyBudgetMs === "number") {
+            const backlog = await new CompactionEngine(conversationStore, summaryStore, compactEngineConfig())
+              .evaluateLeafTrigger(conversation.conversationId);
+            // Leaf calls, plus one condensed call.
+            const estimatedCalls = Math.ceil(backlog.rawTokensOutsideTail / backlog.threshold) + 1;
+            const remainingMs = replyBudgetMs - (Date.now() - startedAt);
+            if (estimatedCalls * ESTIMATED_SUMMARY_CALL_MS > remainingMs) {
+              log.write("info", "precompact.deferred", { cwd, session_id, estimated_calls: estimatedCalls,
+                raw_tokens: backlog.rawTokensOutsideTail, remaining_ms: remainingMs });
+              reply(202, { summary: "", captureOutcome, summaryOutcome: { status: "deferred", reason: "over-budget" } });
+            }
           }
 
           let language = resolveSummarizerLanguage(config, cwd, paths);

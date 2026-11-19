@@ -11,6 +11,12 @@ import { observeHook } from "./observe.js";
  * .claude-plugin/plugin.json. The host otherwise kills the hook before this deadline.
  */
 const COMPACT_TIMEOUT_MS = 115_000;
+/**
+ * The daemon's wait for a summary: past it, the daemon answers 202 once Capture is done
+ * and compacts after the reply, so the host does not stall for the whole deadline.
+ * Five seconds stay for the reply and this process's exit.
+ */
+const REPLY_BUDGET_MS = COMPACT_TIMEOUT_MS - 5_000;
 
 export async function handlePreCompact(stdin: string, client: DaemonClient, paths: LcmPaths, port?: number): Promise<{ exitCode: number; stdout: string }> {
   let input: Record<string, unknown>;
@@ -44,6 +50,7 @@ export async function handlePreCompact(stdin: string, client: DaemonClient, path
       client: "claude",
       capture_required: true,
       operation_id: operationId,
+      reply_budget_ms: REPLY_BUDGET_MS,
     }, { timeoutMs: COMPACT_TIMEOUT_MS });
     observeDelivery("accepted");
 
