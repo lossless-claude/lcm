@@ -403,6 +403,93 @@ describe("the capture guard", () => {
   });
 });
 
+describe("a stored tool output tokenade has since folded in the transcript", () => {
+  const output = "build log line\n".repeat(200);
+  const placeholder = "[tokenade:elided 750 tokens on cold resume — recover: tokenade expand-ref 0123456789ab]";
+  /** The same command run again verbatim, which is when tokenade folds the earlier output as superseded. */
+  const rerun = [
+    { role: "user", content: "q2" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "Bash" }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t2", content: output }] },
+  ];
+
+  /** One tool call, its output as Claude Code wrote it or as tokenade's cold-resume trim left it. */
+  function toolTranscript(first: string, tail: Array<{ role: string; content: unknown }> = []): string {
+    const entries = [
+      { role: "user", content: "q1" },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash" }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: first }] },
+      { role: "assistant", content: "r1" },
+      ...tail,
+    ];
+    const path = join(dir, `${sessionId}.jsonl`);
+    writeFileSync(path, entries.map((message) => JSON.stringify({ message })).join("\n") + "\n");
+    return path;
+  }
+
+  async function storeFullOutput(extra: Turn[] = [], tail: Array<{ role: string; content: unknown }> = []): Promise<void> {
+    const messages = [...parseTranscript(toolTranscript(output, tail)), ...extra.map(([role, content]) => ({ role, content, tokenCount: 1 }))];
+    const written = await capture.write({ sessionId, messages, parserShape: CLAUDE_PARSER_SHAPE });
+    await compact(written.conversationId);
+  }
+
+  it("captures the tail and keeps the stored output whole", async () => {
+    await storeFullOutput();
+    const path = toolTranscript(placeholder, [{ role: "user", content: "q2" }]);
+    const result = await capture.captureTranscript({ sessionId, cwd: dir, transcriptPath: path });
+    expect(result?.records.map((record) => record.content)).toEqual(["q2"]);
+    expect(transcriptMessages()).toContainEqual(["tool", output]);
+  });
+
+  it("classifies a session whose folded output was re-run verbatim as aligned", async () => {
+    await storeFullOutput([], rerun);
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(toolTranscript(placeholder, rerun)), identity))
+      .toMatchObject({ kind: "aligned", gaps: 0, extras: 0 });
+  });
+
+  it("refuses a rebuild even when the folded output still appears unfolded later", async () => {
+    await storeFullOutput([["assistant", "r2"]], rerun);
+    const plan = await planSessionRebuild(db, sessionId, parseTranscript(toolTranscript(placeholder, rerun)), identity);
+    expect(plan).toMatchObject({ kind: "ambiguous", extras: 1 });
+    expect(plan.reason).toContain("tokenade placeholder");
+  });
+
+  it("classifies the session as aligned", async () => {
+    await storeFullOutput();
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(toolTranscript(placeholder)), identity))
+      .toMatchObject({ kind: "aligned", gaps: 0, extras: 0 });
+  });
+
+  it("refuses a rebuild that would replace the stored output with the placeholder", async () => {
+    await storeFullOutput([["assistant", "r1"]]);
+    const plan = await planSessionRebuild(db, sessionId, parseTranscript(toolTranscript(placeholder)), identity);
+    expect(plan).toMatchObject({ kind: "ambiguous", extras: 1 });
+    expect(plan.reason).toContain("tokenade placeholder");
+    // The same damage without the fold stays repairable.
+    expect(await planSessionRebuild(db, sessionId, parseTranscript(toolTranscript(output)), identity))
+      .toMatchObject({ kind: "repairable", extras: 1 });
+  });
+
+  it("refuses a rebuild when tokenade folded only a tool input, which the stored call still holds", async () => {
+    const path = join(dir, `${sessionId}.jsonl`);
+    const transcriptWith = (command: string) => writeFileSync(path, [
+      { role: "user", content: "q1" },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+      { role: "assistant", content: "r1" },
+    ].map((message) => JSON.stringify({ message })).join("\n") + "\n");
+    transcriptWith(`cd repo && python3 - <<'PY'\n${output}PY`);
+    const written = await capture.write({
+      sessionId, messages: [...parseTranscript(path), { role: "assistant", content: "r1", tokenCount: 1 }], parserShape: CLAUDE_PARSER_SHAPE,
+    });
+    await compact(written.conversationId);
+    transcriptWith(`cd repo && python3 - <<'PY'\n${placeholder}`);
+    const plan = await planSessionRebuild(db, sessionId, parseTranscript(path), identity);
+    expect(plan).toMatchObject({ kind: "ambiguous", extras: 1 });
+    expect(plan.reason).toContain("tokenade placeholder");
+  });
+});
+
 describe("classifying a session for a rebuild", () => {
   const plan = async (turns: Turn[] | undefined) =>
     planSessionRebuild(db, sessionId, turns && parseTranscript(transcript(turns)), identity);

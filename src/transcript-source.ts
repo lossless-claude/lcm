@@ -333,15 +333,15 @@ async function validateTranscriptRecovery(
   if (previous.length !== stored.storedCount - offset) throw new TranscriptSourceError(`Stored ${label} history changed during recovery`);
   for (const [index, prior] of previous.entries()) {
     const message = messages[offset + index];
-    if (message.role !== prior.role || !storedContentMatches(prior.content, message.content, ctx.scrub)) {
+    if (message.role !== prior.role || !storedContentMatches(prior.content, message, ctx.scrub)) {
       throw new TranscriptSourceError(`${label} transcript prefix differs from stored history; check the original transcript and redaction settings before retrying`);
     }
   }
 }
 
 /** Compare normalized content under current redaction rules, including legacy rows cut at NUL. */
-function storedContentMatches(stored: string, current: string, scrub: (text: string) => string): boolean {
-  return compareStoredMessageContent(stored, current, scrub) !== undefined;
+function storedContentMatches(stored: string, current: ParsedMessage, scrub: (text: string) => string): boolean {
+  return compareStoredMessageContent(stored, current.content, scrub, current.elided) !== undefined;
 }
 
 /** A removed inherited prefix is proved only by exact equality of the entire parsed file with the stored tail. */

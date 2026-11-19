@@ -7,7 +7,7 @@ import { runLcmMigrations } from "../src/db/migration.js";
 import { SessionCapture } from "../src/capture.js";
 import { ScrubEngine } from "../src/scrub.js";
 import { backfillSessionEventTimes } from "../src/event-time-backfill.js";
-import { parseTranscript } from "../src/transcript.js";
+import { parseClaudeTranscriptRecord, parseTranscript } from "../src/transcript.js";
 import { parseCodexTranscript } from "../src/codex-transcript.js";
 import { parseOmpTranscript } from "../src/omp-transcript.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
@@ -253,6 +253,104 @@ describe("tool-call capture and repair", () => {
     await capture.captureTranscript(input("claude"));
     expect(calls()[0]).toMatchObject({ truncated: 1, input: expect.stringContaining("[REDACTED]") });
     expect(Buffer.byteLength(String(calls()[0].input))).toBeLessThanOrEqual(2048);
+  });
+
+  describe("a Claude call tokenade's cold-resume trim has since folded", () => {
+    const fold = "[tokenade:elided 600 tokens on cold resume — recover: tokenade expand-ref 0123456789ab]";
+    const script = "cd repo && python3 - <<'PY'\n" + "print('step')\n".repeat(20) + "PY";
+    const failure = "Exit code 9\n" + "failure line\n".repeat(200);
+    const transcript = (command: string, output: unknown, tail: unknown[] = []) => writeFileSync(path, [
+      fixture("claude", dir, { command }).call,
+      { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call", is_error: true, content: output }] } },
+      ...tail,
+    ].map(line).join(""));
+    /** Stores the session as it was before the fold, its call through the repair the daemon runs. */
+    async function storeUnfolded(): Promise<Record<string, unknown>> {
+      transcript(script, failure);
+      await capture.write({ sessionId: "session", messages: parseTranscript(path) });
+      await backfillSessionEventTimes(db, input("claude"), scrubber);
+      expect(calls()[0]).toMatchObject({ outcome: "failed", exit_code: 9, block_reason: null, input: script });
+      return calls()[0];
+    }
+
+    it("keeps the stored outcome when capture reads past the folded result", async () => {
+      const before = await storeUnfolded();
+      transcript(script, fold, [{ message: { role: "user", content: "q2" } }]);
+      expect((await capture.captureTranscript(input("claude")))?.records.map(record => record.content)).toEqual(["q2"]);
+      expect(calls()).toEqual([before]);
+    });
+
+    it("keeps the stored outcome when tokenade folded one text part of a result", async () => {
+      const parts = (first: string) => [{ type: "text", text: first }, { type: "text", text: "agentId: x1" }];
+      transcript(script, parts(failure));
+      await capture.write({ sessionId: "session", messages: parseTranscript(path) });
+      await backfillSessionEventTimes(db, input("claude"), scrubber);
+      const before = calls();
+      expect(before[0]).toMatchObject({ outcome: "failed", exit_code: 9 });
+      transcript(script, parts(fold), [{ message: { role: "user", content: "q2" } }]);
+      expect((await capture.captureTranscript(input("claude")))?.records.map(record => record.content)).toEqual(["q2"]);
+      expect(calls()).toEqual(before);
+    });
+
+    it("keeps a stored input whose fold sits below the top level of the tool input", async () => {
+      const query = (body: string) => line({ message: { role: "assistant", content: [
+        { type: "tool_use", id: "call", name: "mcp__service__query", input: { request: { body } } },
+      ] } });
+      writeFileSync(path, query(script));
+      await capture.write({ sessionId: "session", messages: parseTranscript(path) });
+      await backfillSessionEventTimes(db, input("claude"), scrubber);
+      const before = calls();
+      expect(before[0]).toMatchObject({ input: expect.stringContaining("print('step')") });
+      writeFileSync(path, query(`cd repo && python3 - <<'PY'\n${fold}`));
+      await backfillSessionEventTimes(db, input("claude"), scrubber);
+      expect(calls()).toEqual(before);
+    });
+
+    it("keeps the stored input and outcome when the repair aligns through the fold", async () => {
+      const before = await storeUnfolded();
+      transcript(`cd repo && python3 - <<'PY'\n${fold}`, fold);
+      await backfillSessionEventTimes(db, input("claude"), scrubber);
+      expect(calls()).toEqual([before]);
+    });
+
+    it("records the calls after a folded result when the repair aligns through it", async () => {
+      const next = [
+        { message: { role: "assistant", content: [{ type: "tool_use", id: "next", name: "Bash", input: { command: "printf next" } }] } },
+        { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "next", is_error: false, content: "next" }] } },
+      ];
+      transcript(script, failure, next);
+      await capture.write({ sessionId: "session", messages: parseTranscript(path) });
+      transcript(script, fold, next);
+      await backfillSessionEventTimes(db, input("claude"), scrubber);
+      expect(calls().map(call => [call.call_id, call.outcome])).toEqual([["call", "unknown"], ["next", "succeeded"]]);
+    });
+
+    it("takes no outcome from a placeholder it never saw unfolded, only the harness's error flag", async () => {
+      transcript(script, fold);
+      await capture.captureTranscript(input("claude"));
+      expect(calls()[0]).toMatchObject({ outcome: "unknown", exit_code: null, block_reason: null, harness_error: 1 });
+    });
+
+    it("settles a folded call that did not fail as succeeded", async () => {
+      writeFileSync(path, [
+        fixture("claude", dir, { command: script }).call,
+        { message: { role: "user", content: [{ type: "tool_result", tool_use_id: "call", is_error: false, content: fold }] } },
+      ].map(line).join(""));
+      await capture.captureTranscript(input("claude"));
+      expect(calls()[0]).toMatchObject({ outcome: "succeeded", exit_code: null, harness_error: 0 });
+    });
+
+    it("records how a call ended when its output only quotes a placeholder", async () => {
+      transcript(script, `Exit code 1\nmarkers still present:\n${fold}\ncat: other.txt: No such file`);
+      await capture.captureTranscript(input("claude"));
+      expect(calls()[0]).toMatchObject({ outcome: "failed", exit_code: 1, harness_error: 1 });
+    });
+
+    it("keeps an entry whose tool input nests deeper than the stack", () => {
+      const nested = `${"[".repeat(20000)}"leaf"${"]".repeat(20000)}`;
+      const record = `{"message":{"role":"assistant","content":[{"type":"tool_use","id":"deep","name":"Tool","input":{"deep":${nested}}}]}}`;
+      expect(parseClaudeTranscriptRecord(record).message).toMatchObject({ role: "tool", content: "Tool" });
+    });
   });
 });
 
