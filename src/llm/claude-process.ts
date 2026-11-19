@@ -164,11 +164,16 @@ export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): Lcm
   return async function summarize(text: string, aggressive?: boolean, ctx: SummarizeContext = {}): Promise<string> {
     const prompt = buildSummaryPrompt(text, aggressive, ctx);
 
+    // A summary needs no extended thinking, and the effort level the user set for their
+    // own sessions is not the summarizer's: both only add latency to every call.
+    const env: NodeJS.ProcessEnv = { ...process.env, MAX_THINKING_TOKENS: "0" };
+    delete env.CLAUDE_EFFORT;
+
     return new Promise((resolve, reject) => {
       let proc: ChildProcessWithoutNullStreams;
       try {
         // Directory creation happens here, inside the spawn error path.
-        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt, emptyPluginDir()), { stdio: ["pipe", "pipe", "pipe"] });
+        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt, emptyPluginDir()), { stdio: ["pipe", "pipe", "pipe"], env });
       } catch (error) {
         reject(normalizeSpawnError(error));
         return;

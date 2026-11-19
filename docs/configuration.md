@@ -669,6 +669,8 @@ Valid provider values are:
 
 Any other value fails config load, unless it names an endpoint in `llm.providers` (see below).
 
+`claude-process` runs `claude --print` without the user's settings, plugins or MCP servers, and with `MAX_THINKING_TOKENS=0` and no `CLAUDE_EFFORT` in its environment: a summary call gets no extended thinking, whatever the daemon inherited.
+
 `anthropic` and `openai` call their API through a client library: `@anthropic-ai/sdk` and `openai`. The `openai` provider also serves any OpenAI-compatible endpoint set in `llm.baseURL`, such as OpenRouter.
 - **Plugin install:** the plugin bundle includes both libraries.
 - **npm install:** the npm package lists both libraries as optional peer dependencies, so npm does not install them. A daemon started from the npm package (`lcm daemon start`, `lcm daemon restart`) needs the library for every provider it may call — `llm.provider`, `llm.fallbackProvider`, and each endpoint in `llm.fallback` — installed next to lcm. Install it, then restart the daemon so it loads the library:
