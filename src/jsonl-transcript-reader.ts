@@ -98,6 +98,12 @@ export type TranscriptChunk = {
   sha256: string;
 };
 
+/** The same span of the same bytes, giving the same message range. */
+export function sameChunk(left: TranscriptChunk, right: TranscriptChunk): boolean {
+  return left.start === right.start && left.end === right.end && left.sha256 === right.sha256 &&
+    left.firstMessage === right.firstMessage && left.messageCount === right.messageCount;
+}
+
 /** The chunks a read hashed; the saved ones from `from` on are replaced by `list`. */
 export interface TranscriptChunks {
   from: number;

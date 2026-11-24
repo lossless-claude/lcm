@@ -7,7 +7,7 @@ import { extractCodexTurnModels, type CodexSessionMeta } from "./codex-transcrip
 import { readCodexTranscriptDelta, type CodexTranscriptCursor, type CodexTranscriptDelta } from "./codex-transcript-reader.js";
 import { loadClaudeToolUseModels, loadClaudeTranscriptCursor, loadTranscriptCursor, saveClaudeTranscriptCursor, saveTranscriptCursor } from "./db/transcript-cursor.js";
 import { readClaudeTranscriptDelta, type ClaudeTranscriptCursor } from "./claude-transcript-reader.js";
-import type { TranscriptChunk } from "./jsonl-transcript-reader.js";
+import { sameChunk, type TranscriptChunk } from "./jsonl-transcript-reader.js";
 import { claudeTranscriptPath, isSafeTranscriptPath, projectId } from "./daemon/project.js";
 import { yieldToEventLoop } from "./daemon/project-queue.js";
 import type { EventsDb } from "./hooks/events-db.js";
@@ -169,8 +169,7 @@ function provenMessages(saved: readonly TranscriptChunk[], read: readonly Transc
   const proven = new Set<number>();
   for (const chunk of read) {
     const match = byStart.get(chunk.start);
-    if (!match || match.end !== chunk.end || match.sha256 !== chunk.sha256 || match.firstMessage !== chunk.firstMessage ||
-        match.messageCount !== chunk.messageCount || chunk.firstMessage + chunk.messageCount > storedCount) continue;
+    if (!match || !sameChunk(match, chunk) || chunk.firstMessage + chunk.messageCount > storedCount) continue;
     for (let index = chunk.firstMessage; index < chunk.firstMessage + chunk.messageCount; index++) proven.add(index);
   }
   return proven;

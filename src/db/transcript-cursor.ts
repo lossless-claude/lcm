@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import type { ClaudeTranscriptCursor } from "../claude-transcript-reader.js";
-import type { JsonlTranscriptCursor, TranscriptChunk } from "../jsonl-transcript-reader.js";
+import { sameChunk, type JsonlTranscriptCursor, type TranscriptChunk } from "../jsonl-transcript-reader.js";
 
 /**
  * The byte-cursor checkpoint store for every append-only JSONL client
@@ -141,6 +141,13 @@ export function saveClaudeTranscriptCursor(db: DatabaseSync, conversationId: num
   if (cursor.replaceToolUseModels) db.prepare("DELETE FROM claude_tool_use_models WHERE conversation_id = ?").run(conversationId);
   for (const [id, model] of cursor.toolUseModels ?? []) save.run(conversationId, id, model);
   if (!cursor.chunks) return;
+  // A capture that found nothing new hashes its open chunk again. Rewriting identical rows would
+  // dirty pages and cost the commit an fsync; leaving them keeps the no-op capture write-free, as
+  // SQLite already keeps the identical cursor updates above.
+  const saved = db.prepare(`SELECT ${CHUNK_COLUMNS} FROM claude_transcript_chunks WHERE conversation_id = ? AND start_offset >= ?
+    ORDER BY start_offset`).all(conversationId, cursor.chunks.from) as TranscriptChunk[];
+  const { list } = cursor.chunks;
+  if (saved.length === list.length && saved.every((chunk, index) => sameChunk(chunk, list[index]))) return;
   db.prepare("DELETE FROM claude_transcript_chunks WHERE conversation_id = ? AND start_offset >= ?").run(conversationId, cursor.chunks.from);
   const chunk = db.prepare(`INSERT INTO claude_transcript_chunks
     (conversation_id, start_offset, end_offset, first_message, message_count, sha256) VALUES (?, ?, ?, ?, ?, ?)`);

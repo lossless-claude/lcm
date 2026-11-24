@@ -1,4 +1,4 @@
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -381,5 +381,43 @@ describe("after a rewrite through a renamed file, as a tokenade fold does", () =
     await capture.captureTranscript(input);
     replace(readFileSync(io.path, "utf8"));
     await expect(capture.captureTranscript(input)).rejects.toThrow("--rebuild");
+  });
+});
+
+describe("saved proof chunks", () => {
+  const turns = (from: number, count: number) =>
+    Array.from({ length: count }, (_, i) => line(`turn ${from + i} ${"x".repeat(1_500)}`)).join("");
+  const lastChunk = () => db.prepare(`SELECT end_offset, message_count FROM claude_transcript_chunks
+    ORDER BY start_offset DESC LIMIT 1`).get() as { end_offset: number; message_count: number };
+  // The setup turns hold no secrets; the real rules over these transcripts cost seconds.
+  const noScrub = () => vi.spyOn(ScrubEngine.prototype, "scrubWithCounts")
+    .mockImplementation((text) => ({ text, gitleaks: 0, builtIn: 0, global: 0, project: 0 }));
+
+  it("leave a capture that finds nothing new without a single page written", async () => {
+    const { input, capture } = fixture();
+    noScrub();
+    db.exec("PRAGMA journal_mode = WAL");
+    // 100 turns leave the last chunk open, so the capture re-hashes it.
+    writeFileSync(io.path, turns(0, 100));
+    await capture.captureTranscript(input);
+    db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    expect((await capture.captureTranscript(input))?.records).toEqual([]);
+    expect(db.prepare("PRAGMA wal_checkpoint(PASSIVE)").get()).toMatchObject({ log: 0 });
+  });
+
+  it("are rewritten when an append or a rewrite changes the open chunk", async () => {
+    const { input, capture } = fixture();
+    noScrub();
+    writeFileSync(io.path, turns(0, 100));
+    await capture.captureTranscript(input);
+    const before = lastChunk();
+    appendFileSync(io.path, turns(100, 1));
+    await capture.captureTranscript(input);
+    expect(lastChunk()).toEqual({ end_offset: statSync(io.path).size, message_count: before.message_count + 1 });
+    // Same messages, different bytes: a field the parser ignores, through a renamed file.
+    writeFileSync(`${io.path}.replacement`, readFileSync(io.path, "utf8").replace(/}}\n$/, '},"note":1}\n'));
+    renameSync(`${io.path}.replacement`, io.path);
+    expect((await capture.captureTranscript(input))?.records).toEqual([]);
+    expect(lastChunk()).toEqual({ end_offset: statSync(io.path).size, message_count: before.message_count + 1 });
   });
 });
