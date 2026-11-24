@@ -2,7 +2,7 @@ import { spawn as defaultSpawn, type ChildProcessWithoutNullStreams } from "node
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LcmSummarizeFn, SummarizeContext, SummarizerUsage } from "./types.js";
+import type { LcmSummarizeFn, SummarizeContext, SummarizerCallTiming, SummarizerUsage } from "./types.js";
 import { LCM_SUMMARIZER_SYSTEM_PROMPT } from "../summarize.js";
 import { buildSummaryPrompt } from "./prompt.js";
 
@@ -38,6 +38,9 @@ type ClaudeResult = {
   is_error?: boolean;
   result?: string;
   total_cost_usd?: number;
+  duration_ms?: number;
+  duration_api_ms?: number;
+  usage?: { output_tokens_details?: { thinking_tokens?: number } };
   modelUsage?: Record<string, ClaudeModelUsage>;
 };
 
@@ -45,6 +48,9 @@ export type ClaudeJsonOutcome = {
   content: string;
   isError: boolean;
   usage?: SummarizerUsage;
+  durationMs?: number;
+  durationApiMs?: number;
+  thinkingTokens?: number;
 };
 
 /**
@@ -94,6 +100,10 @@ export function parseClaudeResult(stdout: string, fallbackModel: string): Claude
     content: typeof result.result === "string" ? result.result.trim() : "",
     isError: result.is_error === true,
     usage,
+    ...(typeof result.duration_ms === "number" ? { durationMs: result.duration_ms } : {}),
+    ...(typeof result.duration_api_ms === "number" ? { durationApiMs: result.duration_api_ms } : {}),
+    ...(typeof result.usage?.output_tokens_details?.thinking_tokens === "number"
+      ? { thinkingTokens: result.usage.output_tokens_details.thinking_tokens } : {}),
   };
 }
 
@@ -164,11 +174,23 @@ export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): Lcm
   return async function summarize(text: string, aggressive?: boolean, ctx: SummarizeContext = {}): Promise<string> {
     const prompt = buildSummaryPrompt(text, aggressive, ctx);
 
+    // A summary needs no extended thinking, and the effort level the user set for their
+    // own sessions is not the summarizer's: both only add latency to every call.
+    const env: NodeJS.ProcessEnv = { ...process.env, MAX_THINKING_TOKENS: "0" };
+    delete env.CLAUDE_EFFORT;
+
+    const startedAt = Date.now();
+    const reportTiming = (outcome: SummarizerCallTiming["outcome"], result?: ClaudeJsonOutcome) => ctx.onCallTiming?.({
+      provider: "claude-process", model: result?.usage?.model ?? deps.model, outcome, wallMs: Date.now() - startedAt,
+      durationMs: result?.durationMs, durationApiMs: result?.durationApiMs,
+      inputTokens: result?.usage?.inputTokens, outputTokens: result?.usage?.outputTokens, thinkingTokens: result?.thinkingTokens,
+    });
+
     return new Promise((resolve, reject) => {
       let proc: ChildProcessWithoutNullStreams;
       try {
         // Directory creation happens here, inside the spawn error path.
-        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt, emptyPluginDir()), { stdio: ["pipe", "pipe", "pipe"] });
+        proc = deps.spawn("claude", buildClaudeArgs(deps.model, ctx.taskPrompt, emptyPluginDir()), { stdio: ["pipe", "pipe", "pipe"], env });
       } catch (error) {
         reject(normalizeSpawnError(error));
         return;
@@ -189,6 +211,7 @@ export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): Lcm
         } catch {
           // ignore kill failures during timeout cleanup
         }
+        reportTiming("timeout");
         reject(new Error(`claude process timed out after ${Math.round(deps.timeoutMs / 1000)}s`));
       }, deps.timeoutMs);
 
@@ -196,6 +219,7 @@ export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): Lcm
         if (finished) return;
         finished = true;
         clearTimeout(timer);
+        reportTiming("error");
         reject(normalizeSpawnError(err));
       });
 
@@ -206,6 +230,7 @@ export function createClaudeProcessSummarizer(opts: ClaudeProcessDeps = {}): Lcm
 
         const outcome = parseClaudeResult(stdout, deps.model);
         if (outcome?.usage) ctx.onUsage?.(outcome.usage);
+        reportTiming(code === 0 && outcome?.content && !outcome.isError ? "ok" : "error", outcome);
 
         if (code !== 0 || outcome?.isError) {
           reject(buildClaudeExitError(code, stderr, stdout));

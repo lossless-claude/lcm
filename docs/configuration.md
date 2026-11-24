@@ -315,7 +315,8 @@ jq -c 'select(.cwd == "/path/to/project")' ~/.lossless-claude/logs/daemon.log*
 ```
 
 - **Requests**: one `request` record per request, with its route, status and duration. `/session-end`, `/compact` and `/session-start-compact` are logged at `info`, so a `/session-end` with no `/compact` after it is visible. `/tool-event`, `/health` and `/summarize-jobs/*` are logged at `debug`. A 5xx is logged at `error`, and a 4xx at `warn`. At `debug`, each request also gets a `request.start` record (route, `cwd`, `session_id`) when its body has been read, so a request that never completes still leaves a trace.
-- **Outcomes**: `compact.done`, `compact.skipped` (`reason`: `already-compacting`, `disabled`, `no_work`, `auto-compact-disabled`), `compact.sweep`, `promote.done` and `session_end.ingested`.
+- **Outcomes**: `compact.done`, `compact.skipped` (`reason`: `already-compacting`, `disabled`, `no_work`, `auto-compact-disabled`), `compact.sweep`, `precompact.deferred` (PreCompact answered 202 because the estimated model calls exceed its reply budget; with `estimated_calls`, `raw_tokens` and `remaining_ms`), `promote.done` and `session_end.ingested`.
+- **Summarizer calls**: `summarizer.call` (`info`), one per `claude-process` call during `/compact`, failed and timed-out calls included: `outcome` (`ok`, `error`, `timeout`), `wall_ms` from spawn to exit, and, when the CLI's result parsed, its `duration_ms`, `duration_api_ms`, `input_tokens`, `output_tokens` and `thinking_tokens`.
 - **Transcript scan**: `scan.missing_cwd` (`debug`) reports the `sessions` skipped because their working directory no longer exists, once per scan with skipped candidates. They are eligible again when the directory returns.
 - **Failures**: `ingest.failed`, `route.failed`, `compact.failed`, `promote.failed`, `daemon_request.failed` (a follow-up request the daemon could not send to itself), `ingest.subagent_failed`, `daemon.crash` (with its scrubbed stack), `summarizer.fallback` (`from_provider` produced no summary, so `to_provider` summarized instead; the same endpoint at both ends when it is asked again after stopping at the output cap), and `summarizer.endpoint_unavailable` at startup, once per named endpoint left out because `missing_env` is unset.
   Errors serialized in `err` include a scrubbed `stack` when lcm frames are available: only source-relative file locations, lines and columns are retained, without error headers, function labels, dependency frames or absolute path prefixes. Compiled code uses `src/*.js` locations; a plugin bundle retains only its own `bundle/*.js` locations. SQLite errors include `code` and, when present, numeric `errcode` and scrubbed `errstr`. Their `message` is omitted because it can contain SQL or captured text; SQL parameters and other error properties are not serialized. Stack and string fields follow the project scrubber's existing omission rules while its patterns are pending or unavailable.
@@ -668,6 +669,8 @@ Valid provider values are:
 - `session-pool` (dedicated interactive workers, see below)
 
 Any other value fails config load, unless it names an endpoint in `llm.providers` (see below).
+
+`claude-process` runs `claude --print` without the user's settings, plugins or MCP servers, and with `MAX_THINKING_TOKENS=0` and no `CLAUDE_EFFORT` in its environment: a summary call gets no extended thinking, whatever the daemon inherited.
 
 `anthropic` and `openai` call their API through a client library: `@anthropic-ai/sdk` and `openai`. The `openai` provider also serves any OpenAI-compatible endpoint set in `llm.baseURL`, such as OpenRouter.
 - **Plugin install:** the plugin bundle includes both libraries.
@@ -1152,6 +1155,20 @@ one session start requests compaction for, oldest-first; a larger backlog drains
 across successive starts instead of bursting the summarizer. Set `hooks.disableAutoCompact`
 to turn the sweep off entirely. The request is fire-and-forget, so session start's
 latency is unaffected regardless of how large the backlog is.
+
+`compaction.liveLeafTrigger` (default `false`) compacts a running session in small
+steps instead of leaving a whole context window for PreCompact. After a hook's
+`/ingest` that stored new messages (not an import or replay; the transcript scan and
+SessionEnd never fire it), when the raw tokens outside the fresh tail reach
+`LCM_LEAF_CHUNK_TOKENS`, the daemon sends itself an unawaited, unforced `/compact` for
+that session (`work_class: "live"`), unless the session is already compacting or such
+a run failed for it in the last 10 minutes. That run summarizes the whole backlog
+outside the fresh tail, so PreCompact then finds about one leaf chunk left. If such a run
+is still in flight, PreCompact captures first, then waits for the run only when its
+estimated remainder and one more call fit the reply budget, and summarizes the
+residual; otherwise it answers 202 at once and the run produces the summary. The cost is a summarizer call roughly every
+`LCM_LEAF_CHUNK_TOKENS` of conversation while the session runs, and a backlog count
+on each such ingest.
 
 ### Agent worker exclusion
 

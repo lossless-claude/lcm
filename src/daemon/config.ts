@@ -25,6 +25,8 @@ export type DaemonConfig = {
     autoCompactMinTokens: number;
     /** Max conversations of the same project a session start requests compaction for; a larger backlog drains over several starts. */
     autoCompactSessionStartMax: number;
+    /** Compact a live session in the background once its raw backlog reaches a leaf chunk, so PreCompact has little left to summarize. */
+    liveLeafTrigger: boolean;
     promotionThresholds: { minDepth: number; compressionRatio: number; keywords: Record<string, string[]>; architecturePatterns: string[]; dedupBm25Threshold: number; dedupCandidateLimit: number; eventConfidence?: { decision?: number; plan?: number; errorFix?: number; batch?: number; pattern?: number }; reinforcementBoost?: number; maxConfidence?: number; insightsMaxAgeDays?: number };
   };
   search: {
@@ -98,6 +100,7 @@ const DEFAULTS: DaemonConfig = {
     hookDeadlineMs: 1_800_000,
     autoCompactMinTokens: 10000,
     autoCompactSessionStartMax: 2,
+    liveLeafTrigger: false,
     promotionThresholds: {
       minDepth: 2, compressionRatio: 0.3,
       keywords: { decision: ["decided", "agreed", "will use", "going with", "chosen"], fix: ["fixed", "root cause", "workaround", "resolved"] },
@@ -187,6 +190,7 @@ export function loadDaemonConfig(configPath: string, overrides?: any, env?: Reco
   }
   if (typeof merged.timeline.generationEnabled !== "boolean") throw new Error("timeline.generationEnabled must be a boolean");
   if (typeof merged.commits.enabled !== "boolean") throw new Error("commits.enabled must be a boolean");
+  if (typeof merged.compaction.liveLeafTrigger !== "boolean") throw new Error("compaction.liveLeafTrigger must be a boolean");
   if (!merged.daemon.socketPath) merged.daemon.socketPath = join(dirname(configPath), "daemon.sock");
   if (e.LCM_POOL_COMPLETION_MS !== undefined) merged.llm.poolCompletionMs = Number(e.LCM_POOL_COMPLETION_MS);
   const completionMs = merged.llm.poolCompletionMs;

@@ -103,8 +103,30 @@ export function buildCompactionMessage(p: {
 
 
 // A session's compaction remains in flight while its project queue turn is yielded.
-type InFlightCompaction = { sessionId: string; projectId: string; finished: Promise<void> };
+// `incremental`: an unforced run, such as the live leaf trigger's, that a PreCompact may wait out.
+type InFlightCompaction = { sessionId: string; projectId: string; incremental: boolean; finished: Promise<void> };
 const compactingNow = new Map<string, InFlightCompaction>();
+
+/**
+ * Heuristic, not a measurement of the run at hand: one summarizer call (a process
+ * spawn and a leaf-sized prompt) commonly takes about half a minute. Only the order
+ * of magnitude matters to `reply_budget_ms`.
+ */
+const ESTIMATED_SUMMARY_CALL_MS = 30_000;
+
+type SummaryEstimate = { calls: number; rawTokens: number };
+
+/** Leaf calls for the raw backlog outside the fresh tail, plus one condensed call. */
+async function estimateSummaryCalls(capture: SessionCapture, conversationId: number): Promise<SummaryEstimate> {
+  const backlog = await new CompactionEngine(capture.conversationStore, capture.summaryStore, compactEngineConfig())
+    .evaluateLeafTrigger(conversationId);
+  return { calls: Math.ceil(backlog.rawTokensOutsideTail / backlog.threshold) + 1, rawTokens: backlog.rawTokensOutsideTail };
+}
+
+type CaptureStage =
+  | { status: "completed"; messages: number }
+  | { status: "deferred"; reason: "no-capture-result" }
+  | { status: "failed"; reason: "invalid-source" | "capture-error" };
 
 function compactionKey(cwd: string, sessionId: string): string {
   return JSON.stringify([projectId(cwd), sessionId]);
@@ -119,13 +141,32 @@ export function compactingSessionsFor(cwd: string): string[] {
   return [...compactingNow.values()].filter((entry) => entry.projectId === id).map((entry) => entry.sessionId);
 }
 
+/**
+ * How long the live leaf trigger leaves a session alone after its unforced run failed,
+ * so a failing summarizer is not called again on every ingest.
+ */
+export const LIVE_COMPACTION_RETRY_MS = 10 * 60_000;
+const incrementalFailedAt = new Map<string, number>();
+
+/** Whether the live leaf trigger may start an unforced run for this session now. */
+export function liveCompactionAllowed(cwd: string, sessionId: string, now = Date.now()): boolean {
+  const key = compactionKey(cwd, sessionId);
+  if (compactingNow.has(key)) return false;
+  const failedAt = incrementalFailedAt.get(key);
+  if (failedAt === undefined) return true;
+  if (now - failedAt < LIVE_COMPACTION_RETRY_MS) return false;
+  incrementalFailedAt.delete(key);
+  return true;
+}
+
 /** Register an in-flight compaction; returns the release function. */
-export function markCompacting(sessionId: string, cwd: string): () => void {
+export function markCompacting(sessionId: string, cwd: string, incremental = false): () => void {
   const key = compactionKey(cwd, sessionId);
   let finish!: () => void;
   const entry = {
     sessionId,
     projectId: projectId(cwd),
+    incremental,
     finished: new Promise<void>((resolve) => { finish = resolve; }),
   };
   compactingNow.set(key, entry);
@@ -133,6 +174,12 @@ export function markCompacting(sessionId: string, cwd: string): () => void {
     if (compactingNow.get(key) === entry) compactingNow.delete(key);
     finish();
   };
+}
+
+function settlesWithin(work: Promise<void>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expiry = new Promise<boolean>((resolve) => { timer = setTimeout(resolve, timeoutMs, false); });
+  return Promise.race([work.then(() => true), expiry]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -321,6 +368,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
   };
 
   return async (_req, res, body) => {
+    const startedAt = Date.now();
     const input = JSON.parse(body || "{}");
     const controller = new AbortController();
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -344,6 +392,17 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         typeof input.capture_through_uuid !== "string" || !input.capture_through_uuid.trim() || input.capture_through_uuid.length > 140)) {
       reply(400, { error: "render_context requires Claude Capture, a UUID boundary and a byte budget of 1..65536" }); return;
     }
+    // The caller's wait for a summary. A run estimated not to fit is answered 202 once
+    // captured and keeps compacting after the reply.
+    const replyBudgetMs: unknown = input.reply_budget_ms;
+    if (replyBudgetMs !== undefined && (renderContext || !Number.isSafeInteger(replyBudgetMs) || (replyBudgetMs as number) <= 0)) {
+      reply(400, { error: "reply_budget_ms must be a positive integer and cannot be combined with render_context" }); return;
+    }
+    // Unforced runs leave the engine's own thresholds in charge; the live leaf trigger sends them.
+    if (input.force !== undefined && typeof input.force !== "boolean") {
+      reply(400, { error: "force must be a boolean" }); return;
+    }
+    const force = input.force !== false;
     const model = input.compaction_summary_model ?? DEFAULT_COMPACTION_SUMMARY_MODEL;
     const requester = renderContext && model !== "pool" && input.summary_via_requester === true;
     if (renderContext && (!validCompactionSummaryModel(model) ||
@@ -403,7 +462,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     if (session_id === TIMELINE_SESSION_ID || workerExcluded(cwd, session_id, paths, transcript_path)) {
       reply(200, { summary: "", replayOutcome: "skipped", reason: session_id === TIMELINE_SESSION_ID ? "timeline-excluded" : "worker-excluded", }); return;
     }
-    const captureOnly = async () => {
+    // `measure`: also estimate the summary calls left for the session once captured.
+    const captureOnly = async (measure = false): Promise<{ outcome: CaptureStage; estimate?: SummaryEstimate }> => {
       try {
         // A summary for this session may own the project's queue while waiting on
         // an LLM. Capture must finish before the host's PreCompact deadline.
@@ -417,14 +477,16 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           try {
             controller.signal.throwIfAborted();
           runLcmMigrations(db);
-            const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber, paths), {
+            const sessionCapture = new SessionCapture(db, projectId(cwd), scrubber, paths);
+            const captured = await captureForCompact(sessionCapture, {
               sessionId: session_id, cwd, client, transcriptPath: transcript_path, signal: controller.signal,
             }, paths, log);
-            const outcome = captured
-              ? { status: "completed" as const, messages: captured.records.length }
-              : { status: "deferred" as const, reason: "no-capture-result" as const };
+            const outcome: CaptureStage = captured
+              ? { status: "completed", messages: captured.records.length }
+              : { status: "deferred", reason: "no-capture-result" };
             log.write("info", "precompact.capture", { cwd, session_id, ...outcome });
-            return outcome;
+            const estimate = captured && measure ? await estimateSummaryCalls(sessionCapture, captured.conversationId) : undefined;
+            return { outcome, estimate };
           } finally {
             db.close();
           }
@@ -432,13 +494,27 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       } catch (err) {
         if (err instanceof CompactionDeadlineError) throw err;
         log.write("error", "precompact.capture_failed", { cwd, session_id, err });
-        return { status: "failed" as const, reason: err instanceof TranscriptSourceError ? "invalid-source" as const : "capture-error" as const };
+        return { outcome: { status: "failed", reason: err instanceof TranscriptSourceError ? "invalid-source" : "capture-error" } };
       }
     };
 
-    const skipBusy = async () => {
+    // `captured`: a Capture this request already ran, which must not run twice.
+    // A PreCompact that answers before its summary exists still tells the restore that
+    // follows it to replay the saved instructions; that restore cannot wait for the summary.
+    const markCompactedForRestore = async () => {
+      try {
+        await withProjectMutation(projectId(cwd), async () => {
+          const db = openStandaloneLcmConnection(projectDbPath(cwd, paths));
+          try { markSessionCompacted(db, session_id); } finally { db.close(); }
+        });
+      } catch (err) {
+        log.write("warn", "precompact.mark_failed", { cwd, session_id, err });
+      }
+    };
+
+    const skipBusy = async (captured?: CaptureStage) => {
       log.write("info", "compact.skipped", { cwd, session_id, reason: "project-busy" });
-      const captureOutcome = captureRequired ? await captureOnly() : undefined;
+      const captureOutcome = captureRequired ? captured ?? (await captureOnly()).outcome : undefined;
       if (captureRequired) log.write("info", "precompact.summary", { cwd, session_id, status: "skipped", reason: "busy" });
       if (captureRequired && captureOutcome) recordPrecompactStages({
         cwd, sessionId: session_id, client, operationId, capture: captureOutcome,
@@ -458,20 +534,45 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
     // Direct requests wait for this session's in-flight result. Deadline-bound
     // hooks and replay callers retain the busy outcome; required Capture still runs.
+    // A PreCompact with a reply budget waits out an incremental run when the run's
+    // estimated remainder still leaves a call for the residual, then summarizes that
+    // residual itself; otherwise it answers 202 at once and leaves the summary to the run.
+    // It captures before waiting: the transcript can be rewritten meanwhile (another
+    // PreCompact hook may fold rows not stored yet), and a waiter would store the rewrite.
     const key = compactionKey(cwd, session_id);
-    while (compactingNow.has(key)) {
+    let earlyCapture: CaptureStage | undefined;
+    for (let inFlight = compactingNow.get(key); inFlight; inFlight = compactingNow.get(key)) {
+      if (captureRequired && inFlight.incremental && typeof replyBudgetMs === "number" && !earlyCapture) {
+        const { outcome, estimate } = await captureOnly(true);
+        earlyCapture = outcome;
+        const waitMs = replyBudgetMs - (Date.now() - startedAt) - ESTIMATED_SUMMARY_CALL_MS;
+        if (outcome.status === "completed" && estimate) {
+          if (estimate.calls * ESTIMATED_SUMMARY_CALL_MS > waitMs) {
+            log.write("info", "precompact.deferred", { cwd, session_id, estimated_calls: estimate.calls,
+              raw_tokens: estimate.rawTokens, remaining_ms: waitMs + ESTIMATED_SUMMARY_CALL_MS, in_flight: true });
+            log.write("info", "precompact.summary", { cwd, session_id, status: "deferred", reason: "over-budget" });
+            recordPrecompactStages({ cwd, sessionId: session_id, client, operationId, capture: outcome,
+              summary: { status: "deferred", reason: "over-budget" } }, paths, log);
+            await markCompactedForRestore();
+            reply(202, { summary: "", captureOutcome: outcome, summaryOutcome: { status: "deferred", reason: "over-budget" } });
+            return;
+          }
+          if (await settlesWithin(inFlight.finished, waitMs)) continue;
+        }
+      }
       if (captureRequired || precompactVerified || skip_ingest) {
-        await skipBusy();
+        await skipBusy(earlyCapture);
         return;
       }
-      await compactingNow.get(key)!.finished;
+      await inFlight.finished;
     }
     if ((captureRequired || precompactVerified) && hasBlockingProjectWork(projectId(cwd))) {
-      await skipBusy();
+      await skipBusy(earlyCapture);
       return;
     }
+    const earlyMessages = earlyCapture?.status === "completed" ? earlyCapture.messages : 0;
     // Check and mark have no await between them, including after a waiter wakes.
-    const releaseCompacting = markCompacting(session_id, cwd);
+    const releaseCompacting = markCompacting(session_id, cwd, !force);
 
     const effectiveProvider = input.replay_provider ?? resolveEffectiveProvider(config, client);
     const providerLabels: Record<EffectiveProvider, string> = {
@@ -524,6 +625,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
         return withProjectMutation(pid, async (lease) => {
         const db = getLcmConnection(dbPath);
+        let markedForRestore = false;
         try {
           controller.signal.throwIfAborted();
           runLcmMigrations(db);
@@ -556,7 +658,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
           const captureOutcome = captureRequired
             ? captured
-              ? { status: "completed" as const, messages: captured.records.length }
+              ? { status: "completed" as const, messages: earlyMessages + captured.records.length }
               : { status: "deferred" as const, reason: "no-capture-result" as const }
             : undefined;
           const verification = (captured as TranscriptCaptureResult | undefined)?.verification;
@@ -607,6 +709,19 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
               captureOutcome,
               summaryOutcome: { status: "skipped" as const, reason: "disabled" },
             };
+          }
+
+          if (typeof replyBudgetMs === "number") {
+            const estimate = await estimateSummaryCalls(capture, conversation.conversationId);
+            const remainingMs = replyBudgetMs - (Date.now() - startedAt);
+            if (estimate.calls * ESTIMATED_SUMMARY_CALL_MS > remainingMs) {
+              log.write("info", "precompact.deferred", { cwd, session_id, estimated_calls: estimate.calls,
+                raw_tokens: estimate.rawTokens, remaining_ms: remainingMs });
+              // The restore that follows this PreCompact runs long before the summary ends.
+              markSessionCompacted(db, session_id);
+              markedForRestore = true;
+              reply(202, { summary: "", captureOutcome, summaryOutcome: { status: "deferred", reason: "over-budget" } });
+            }
           }
 
           let language = resolveSummarizerLanguage(config, cwd, paths);
@@ -694,6 +809,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   log.write("warn", "summarizer.cut", { cwd, session_id, provider, model, reason,
                     max_output_tokens: maxOutputTokens, output_tokens: outputTokens ?? null, tail_repetition: tailRepetition });
                 },
+                onCallTiming: ({ provider, model, outcome, wallMs, durationMs, durationApiMs, inputTokens, outputTokens, thinkingTokens }) => {
+                  log.write("info", "summarizer.call", { cwd, session_id, provider, model, outcome, wall_ms: wallMs,
+                    duration_ms: durationMs ?? null, duration_api_ms: durationApiMs ?? null, input_tokens: inputTokens ?? null,
+                    output_tokens: outputTokens ?? null, thinking_tokens: thinkingTokens ?? null });
+                },
                 onFallback: ({ reason, fromProvider, toProvider }) => {
                   if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
               settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
@@ -761,7 +881,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             conversationId: conversation.conversationId,
             tokenBudget: COMPACT_TOKEN_BUDGET,
             summarize: summarizeWithUsage,
-            force: true,
+            force,
             previousSummaryContent: validatedPreviousSummary,
           });
 
@@ -779,8 +899,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             log.write("warn", "compact.meta_failed", { cwd, session_id, err });
           }
 
-          // Tell the restore that follows to replay the saved instructions.
-          markSessionCompacted(db, session_id);
+          // Tell the restore that follows to replay the saved instructions. Only a PreCompact
+          // or a forced run is followed by one; a deferred PreCompact marked before its reply.
+          if (!markedForRestore && (force || captureRequired || precompactVerified)) markSessionCompacted(db, session_id);
 
           const summaryMsg = compactResult.actionTaken
             ? buildCompactionMessage({
@@ -854,6 +975,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         });
       }); // end enqueue
 
+      if (!force) incrementalFailedAt.delete(key);
       if (deadlineReplied) return;
       if (result.replayOutcome === "compacted" && "tokensBefore" in result) {
         log.write("info", "compact.done", { cwd, session_id, tokens_before: result.tokensBefore, tokens_after: result.tokensAfter });
@@ -879,6 +1001,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     } catch (err) {
       if (err instanceof CompactionDeadlineError) return;
       log.write("error", "compact.failed", { cwd, session_id, err });
+      if (!force) incrementalFailedAt.set(key, Date.now());
       if (deadlineReplied) return;
       if (captureRequired) {
         if (captureOutcomeForError?.status !== "completed") {

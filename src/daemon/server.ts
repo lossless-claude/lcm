@@ -28,6 +28,7 @@ import { createDescribeHandler } from "./routes/describe.js";
 import { createStoreHandler } from "./routes/store.js";
 import { createRecentHandler } from "./routes/recent.js";
 import { createIngestHandler } from "./routes/ingest.js";
+import { fireCompactRequest } from "../hooks/daemon-requests.js";
 import { createCommitBackfillHandler } from "./routes/commits.js";
 import { createPromptSearchHandler } from "./routes/prompt-search.js";
 import { createStatusHandler } from "./routes/status.js";
@@ -219,7 +220,12 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   // Named here (not just for HTTP requests) so a stall during a background task is attributed to it.
   const inFlight = new Set<InFlightRequest>();
   const beginTask: BeginBackgroundTask = (name) => beginBackgroundTask(inFlight, name);
-  routes.set("POST /ingest", createIngestHandler(config, paths, log, beginTask));
+  // Bound once the server listens: the live leaf trigger calls this daemon back. Only
+  // hook ingests reach this route; the scan and SessionEnd use the handler below, which
+  // has no trigger, so a scan cannot start a live run for every session with a backlog.
+  let requestLiveCompaction: ((body: Record<string, unknown>) => void) | undefined;
+  const requestCompaction = (body: Record<string, unknown>) => requestLiveCompaction?.(body);
+  routes.set("POST /ingest", createIngestHandler(config, paths, log, beginTask, requestCompaction));
   routes.set("POST /backfill-commits", createCommitBackfillHandler(config, paths));
   routes.set("POST /prompt-search", createPromptSearchHandler(config, paths));
   routes.set("POST /capture-retry", createCaptureRetryHandler(paths));
@@ -330,6 +336,8 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
       routes.set("POST /session-start-compact", createSessionStartCompactHandler(config, actualPort, paths, log));
       // The follow-ups call this daemon back, so they must present the token it checks.
       const sequencePaths = options?.tokenPath ? { ...paths, tokenPath: options.tokenPath } : paths;
+      requestLiveCompaction = (body) => fireCompactRequest(actualPort, body, sequencePaths,
+        (err) => log.write("error", "daemon_request.failed", { path: "/compact", cwd: body.cwd, session_id: body.session_id, err }));
       routes.set("POST /session-end", createSessionEndHandler(config, actualPort, sequencePaths, ingestHandler, log,
         beginTask));
 

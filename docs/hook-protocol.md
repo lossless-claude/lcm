@@ -30,6 +30,10 @@ Invoked by Claude Code before it runs its built-in compaction. The daemon attemp
 
 **Response:** Exit code `0`. Summary text on stdout when the daemon compacted; empty stdout to defer.
 
+### Reply budget
+
+The hook sends `reply_budget_ms` (110000: its 115s request deadline less 5s for the reply). After Capture the daemon estimates the summary's model calls as one per `LCM_LEAF_CHUNK_TOKENS` of raw tokens outside the fresh tail, plus one condensed call, at a heuristic 30s each. When that exceeds what is left of the budget, it answers HTTP 202 with `summaryOutcome: { status: "deferred", reason: "over-budget" }`, logs `precompact.deferred`, and keeps compacting after the reply; the hook counts the delivery as accepted and prints nothing. The hook outcomes are recorded when that work ends. When an unforced run of the live leaf trigger (`compaction.liveLeafTrigger`) is compacting the session, the PreCompact captures first and then waits for that run only if the run's estimated remainder, plus one call for the residual, fits the budget; otherwise it answers the same 202 at once, records its outcomes, and leaves the summary to the run. A request without the field waits for the summary. The field must be a positive integer and cannot be combined with `render_context`.
+
 ### Complete compaction context
 
 `POST /compact` can return a complete conversation window after Capture and a summary sweep.
@@ -108,7 +112,7 @@ The snapshot reads `~/.claude/CLAUDE.md`, `CLAUDE.md` in the working directory, 
 | `hook_event_name` | string | `"SessionStart"` |
 | `source` | string (optional) | `"startup"`, `"resume"`, `"clear"`, or `"compact"`; compaction replays the saved instructions |
 
-If `source` is missing or unrecognized, lcm uses a recent compaction mark for the same session to decide whether to replay the saved instructions. Explicit `"startup"`, `"resume"`, and `"clear"` values override that fallback; `"compact"` always requests replay. `/compact` writes the mark into the project database (`session_compactions`), so it survives a daemon restart inside the window; the window is 30 seconds. The fallback is not an edge case for the function-hooks module — `prompt.context` carries no reason for firing, so there the mark is the only thing that tells a post-compaction restore from a fresh one.
+If `source` is missing or unrecognized, lcm uses a recent compaction mark for the same session to decide whether to replay the saved instructions. Explicit `"startup"`, `"resume"`, and `"clear"` values override that fallback; `"compact"` always requests replay. `/compact` writes the mark into the project database (`session_compactions`), so it survives a daemon restart inside the window; the window is 30 seconds. A PreCompact or forced run writes it when its summary is done, and a PreCompact answered 202 writes it before the reply; an unforced run of the live leaf trigger never writes it. The fallback is not an edge case for the function-hooks module — `prompt.context` carries no reason for firing, so there the mark is the only thing that tells a post-compaction restore from a fresh one.
 
 **Response:** Exit code `0`. Context is injected via stdout (printed as a `<context>` block that Claude Code prepends to the session).
 

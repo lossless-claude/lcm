@@ -24,7 +24,8 @@ import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { enqueue, withProjectMutation } from "../project-queue.js";
-import { holdSessionCompaction } from "./compact.js";
+import { holdSessionCompaction, liveCompactionAllowed } from "./compact.js";
+import { CompactionEngine, compactEngineConfig } from "../../compaction.js";
 import { backupProjectDatabase } from "../../claude-rebuild.js";
 import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../../cut-row-repair.js";
 import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
@@ -272,6 +273,8 @@ export function createIngestHandler(
   paths: LcmPaths,
   log: DaemonLog = noopDaemonLog,
   beginBackgroundTask: BeginBackgroundTask = () => () => {},
+  /** Sends an unawaited `/compact` request for a live session; see `compaction.liveLeafTrigger`. */
+  requestCompaction: (body: Record<string, unknown>) => void = () => {},
 ): RouteHandler {
   return async (_req, res, body) => {
     const input = JSON.parse(body || "{}") as IngestInput;
@@ -341,6 +344,7 @@ export function createIngestHandler(
         return;
       }
       let captured: TranscriptCaptureResult | undefined;
+      let leafBacklogDue = false;
       const result = await enqueue(pid, async () => {
         openProject(cwd, paths);
         return withProjectMutation(pid, async () => {
@@ -395,6 +399,10 @@ export function createIngestHandler(
           void scheduleProjectLanguageDetection(cwd, db, config, paths, input.client);
 
           const totalTokens = await capture.summaryStore.getContextTokenCount(conversationId);
+          if (config.compaction.liveLeafTrigger && input.source !== "import" && input.replay !== true) {
+            leafBacklogDue = (await new CompactionEngine(capture.conversationStore, capture.summaryStore, compactEngineConfig())
+              .evaluateLeafTrigger(conversationId)).shouldCompact;
+          }
           const totalRedacted = totalCounts.gitleaks + totalCounts.builtIn + totalCounts.global + totalCounts.project;
           const redactionCategories: string[] = [];
           if (totalCounts.gitleaks > 0) redactionCategories.push("gitleaks");
@@ -443,6 +451,11 @@ export function createIngestHandler(
       const backfillFirst = input.backfill_before_reply === true;
       if (captured && backfillFirst && !backfill(captured)) incomplete = true;
       sendJson(res, 200, incomplete ? { ...result, incomplete: true } : result);
+      // Fires once the backlog reaches a leaf chunk; the unforced run then drains the
+      // whole backlog outside the fresh tail, which keeps PreCompact's residual small.
+      if (leafBacklogDue && liveCompactionAllowed(cwd, session_id)) {
+        requestCompaction({ session_id, cwd, skip_ingest: true, work_class: "live", force: false, client: input.client });
+      }
       // After the response: the scan is O(transcript) and the caller is waiting. Named,
       // since the request has ended by then and a stall during it would otherwise go unattributed.
       if (captured && !backfillFirst) {

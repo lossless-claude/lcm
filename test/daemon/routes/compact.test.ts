@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -14,6 +14,7 @@ import { createLcmPaths } from "../../../src/lcm-paths.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
 import { clearReplayState, createReplayRun, replaySessionsToClear } from "../../../src/replay-resume.js";
 import { EventsDb } from "../../../src/hooks/events-db.js";
+import { wasSessionJustCompacted } from "../../../src/db/session-compactions.js";
 import { eventsDbPath } from "../../../src/db/events-path.js";
 
 const paths = createLcmPaths(lcmHome());
@@ -61,7 +62,9 @@ import { createOmpProcessSummarizer } from "../../../src/llm/omp-process.js";
 import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
 import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-language.js";
-import { createCompactHandler, buildCompactionMessage, markCompacting } from "../../../src/daemon/routes/compact.js";
+import {
+  createCompactHandler, buildCompactionMessage, markCompacting, liveCompactionAllowed, LIVE_COMPACTION_RETRY_MS,
+} from "../../../src/daemon/routes/compact.js";
 import { createIngestHandler } from "../../../src/daemon/routes/ingest.js";
 import { createReplayResetHandler } from "../../../src/daemon/routes/replay-reset.js";
 import { enqueue } from "../../../src/daemon/project-queue.js";
@@ -1780,5 +1783,293 @@ describe("replay restart during compaction", () => {
     await createReplayResetHandler(paths)({} as any, response.res, body);
     expect(response.res.writeHead.mock.calls[0][0]).toBe(400);
     expect(response.getBody()).toEqual({ error });
+  });
+});
+
+describe("PreCompact reply budget", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeBacklog(cwd: string, sessionId: string): string {
+    const transcriptPath = join(cwd, `${sessionId}.jsonl`);
+    writeFileSync(transcriptPath, Array.from({ length: 20 }, (_, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user",
+        content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    return transcriptPath;
+  }
+
+  function replyRecorder() {
+    const replied = Promise.withResolvers<{ status: number; body: Record<string, unknown> }>();
+    let status = 0;
+    const res = {
+      writeHead: vi.fn((code: number) => { status = code; return res; }),
+      end: vi.fn((data?: string) => { replied.resolve({ status, body: JSON.parse(data || "{}") }); }),
+    } as any;
+    return { res, replied: replied.promise };
+  }
+
+  function justCompacted(cwd: string, sessionId: string): boolean {
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    try {
+      return wasSessionJustCompacted(db, sessionId);
+    } finally {
+      db.close();
+    }
+  }
+
+  it("answers 202 after Capture when the estimated summary cannot fit, then finishes the summary", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-deferred-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "deferred");
+    const resume = Promise.withResolvers<void>();
+    let calls = 0;
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      calls += 1;
+      await resume.promise;
+      return "summary of the deferred backlog";
+    });
+    const { res, replied } = replyRecorder();
+    const compacting = createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "deferred", cwd, transcript_path: transcriptPath, capture_required: true, reply_budget_ms: 1_000,
+    }));
+    try {
+      const reply = await Promise.race([replied, compacting.then(() => { throw new Error("handler ended before replying"); })]);
+      expect(reply.status).toBe(202);
+      expect(reply.body).toMatchObject({
+        captureOutcome: { status: "completed", messages: 20 },
+        summaryOutcome: { status: "deferred", reason: "over-budget" },
+      });
+      expect(await readMessageCount(cwd, "deferred")).toBe(20);
+      // The restore after this PreCompact runs while the summary is still being written.
+      expect(justCompacted(cwd, "deferred")).toBe(true);
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+    expect(calls).toBeGreaterThan(0);
+    expect(res.end).toHaveBeenCalledTimes(1);
+    expect(await readSummaryCount(cwd, "deferred")).toBeGreaterThan(0);
+    const observations = new EventsDb(eventsDbPath(cwd, paths));
+    try {
+      expect(observations.getHookObservationSummary("deferred")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: "summary", status: "completed", count: 1 }),
+      ]));
+    } finally {
+      observations.close();
+    }
+  }, 10_000);
+
+  it("waits for the summary when the estimate fits the budget", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-in-budget-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "in-budget");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => "summary within the budget");
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "in-budget", cwd, transcript_path: transcriptPath, capture_required: true, reply_budget_ms: 600_000,
+    }));
+    const reply = await replied;
+    expect(reply.status).toBe(200);
+    expect(reply.body.summaryOutcome).toMatchObject({ status: "completed" });
+  });
+
+  it.each([0, -1, 1.5, "110000"])("rejects reply_budget_ms %j", async (budget) => {
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+      session_id: "bad-budget", cwd: tmpdir(), capture_required: true, reply_budget_ms: budget,
+    }));
+    expect((await replied).status).toBe(400);
+  });
+
+  it("leaves an unforced run to the engine's thresholds", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000000");
+    try {
+      const cwd = mkdtempSync(join(tmpdir(), "lcm-unforced-"));
+      dirs.push(cwd);
+      const transcriptPath = writeBacklog(cwd, "unforced");
+      const summarize = vi.fn(async () => "unexpected summary");
+      vi.mocked(createOpenAISummarizer).mockReturnValueOnce(summarize);
+      const { res, replied } = replyRecorder();
+      await createCompactHandler(makeConfig("openai"), paths)({} as any, res, JSON.stringify({
+        session_id: "unforced", cwd, transcript_path: transcriptPath, force: false,
+      }));
+      expect((await replied).body).toMatchObject({ replayOutcome: "no_work" });
+      expect(summarize).not.toHaveBeenCalled();
+      // No restore follows an unforced run, so it must not claim the session was just compacted.
+      expect(justCompacted(cwd, "unforced")).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  async function startIncrementalRun(sessionId: string) {
+    const cwd = mkdtempSync(join(tmpdir(), `lcm-${sessionId}-`));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, sessionId);
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary of an incremental leaf";
+    });
+    const handler = createCompactHandler(makeConfig("openai"), paths);
+    const incremental = handler({} as any, replyRecorder().res, JSON.stringify({
+      session_id: sessionId, cwd, transcript_path: transcriptPath, force: false,
+    }));
+    await Promise.race([entered.promise, incremental.then(() => { throw new Error("incremental run did not reach its LLM"); })]);
+    appendFileSync(transcriptPath, JSON.stringify({ message: { role: "user", content: "tail after the incremental run" } }) + "\n");
+    return { cwd, transcriptPath, handler, incremental, resume };
+  }
+
+  it("lets a PreCompact wait out an incremental run, then summarize the residual", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    const run = await startIncrementalRun("wait-incremental");
+    try {
+      const { res, replied } = replyRecorder();
+      const precompact = run.handler({} as any, res, JSON.stringify({
+        session_id: "wait-incremental", cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: 600_000,
+      }));
+      const early = await Promise.race([replied.then(() => "replied"), new Promise((resolve) => setTimeout(resolve, 500, "waiting"))]);
+      expect(early).toBe("waiting");
+      run.resume.resolve();
+      await run.incremental;
+      const reply = await replied;
+      await precompact;
+      expect(reply.status).toBe(200);
+      expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+      expect(reply.body.summaryOutcome).not.toMatchObject({ reason: "busy" });
+    } finally {
+      run.resume.resolve();
+      await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it("captures before waiting for an incremental run, so a transcript rewritten meanwhile is not stored", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    const run = await startIncrementalRun("capture-before-wait");
+    try {
+      const before = await readMessageCount(run.cwd, "capture-before-wait");
+      const { res, replied } = replyRecorder();
+      const precompact = run.handler({} as any, res, JSON.stringify({
+        session_id: "capture-before-wait", cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: 600_000,
+      }));
+      // While the PreCompact waits for the run, the tail it was asked to capture is stored.
+      await vi.waitFor(async () => expect(await readMessageCount(run.cwd, "capture-before-wait")).toBe(before + 1),
+        { timeout: 5_000, interval: 50 });
+      // A parallel PreCompact hook then folds that row in the transcript.
+      const folded = "[tokenade:elided 9 tokens on cold resume — recover: tokenade expand-ref 0123456789ab]";
+      writeFileSync(run.transcriptPath, readFileSync(run.transcriptPath, "utf8").replace("tail after the incremental run", folded));
+      run.resume.resolve();
+      await run.incremental;
+      await replied;
+      await precompact;
+      const contents = await readMessageContents(run.cwd, "capture-before-wait");
+      expect(contents).toContain("tail after the incremental run");
+      expect(contents).not.toContain(folded);
+    } finally {
+      run.resume.resolve();
+      await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it.each([20_000, 100_000])("answers 202 at once when an incremental run cannot finish within a %i ms budget", async (budget) => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    const sessionId = `no-room-incremental-${budget}`;
+    const run = await startIncrementalRun(sessionId);
+    try {
+      const { res, replied } = replyRecorder();
+      const begin = Date.now();
+      await run.handler({} as any, res, JSON.stringify({
+        session_id: sessionId, cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: budget,
+      }));
+      const reply = await replied;
+      // The run's remainder is several calls; waiting for it would only end in the busy skip.
+      expect(Date.now() - begin).toBeLessThan(5_000);
+      expect(reply.status).toBe(202);
+      expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
+      expect(reply.body.summaryOutcome).toMatchObject({ status: "deferred", reason: "over-budget" });
+      expect(justCompacted(run.cwd, sessionId)).toBe(true);
+      const observations = new EventsDb(eventsDbPath(run.cwd, paths));
+      try {
+        expect(observations.getHookObservationSummary(sessionId)).toEqual(expect.arrayContaining([
+          expect.objectContaining({ operation: "capture", status: "completed", count: 1 }),
+          expect.objectContaining({ operation: "summary", status: "deferred", reason: "over-budget", count: 1 }),
+        ]));
+      } finally {
+        observations.close();
+      }
+    } finally {
+      run.resume.resolve();
+      await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it("backs the live leaf trigger off a session whose unforced run failed", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    try {
+      const cwd = mkdtempSync(join(tmpdir(), "lcm-live-failing-"));
+      dirs.push(cwd);
+      const failing = async () => { throw new Error("summarizer unavailable"); };
+      const config = makeConfig("openai");
+      config.compaction.liveLeafTrigger = true;
+      for (const [sessionId, force] of [["live-failing", false], ["forced-failing", true]] as const) {
+        const transcriptPath = writeBacklog(cwd, sessionId);
+        vi.mocked(createOpenAISummarizer).mockReturnValueOnce(failing);
+        const { res, replied } = replyRecorder();
+        await createCompactHandler(config, paths)({} as any, res, JSON.stringify({ session_id: sessionId, cwd, transcript_path: transcriptPath, force }));
+        expect((await replied).status).toBe(500);
+      }
+      // A failed forced run is not the trigger's, and does not hold the trigger back.
+      expect(liveCompactionAllowed(cwd, "forced-failing")).toBe(true);
+      expect(liveCompactionAllowed(cwd, "live-failing")).toBe(false);
+
+      const transcriptPath = join(cwd, "live-failing.jsonl");
+      const ingest = async () => {
+        appendFileSync(transcriptPath, Array.from({ length: 10 }, (_, index) => JSON.stringify({
+          message: { role: index % 2 ? "assistant" : "user", content: `more ${index} ${"content for compaction ".repeat(100)}` },
+        })).join("\n") + "\n");
+        const requestCompaction = vi.fn();
+        await createIngestHandler(config, paths, undefined, undefined, requestCompaction)({} as any, mockRes().res, JSON.stringify({
+          session_id: "live-failing", cwd, transcript_path: transcriptPath,
+        }));
+        return requestCompaction.mock.calls.length;
+      };
+      expect(await ingest()).toBe(0);
+      expect(liveCompactionAllowed(cwd, "live-failing", Date.now() + LIVE_COMPACTION_RETRY_MS)).toBe(true);
+      expect(await ingest()).toBe(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it("logs each summarizer call's timing", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-call-timing-"));
+    dirs.push(cwd);
+    const transcriptPath = writeBacklog(cwd, "call-timing");
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async (_text, _aggressive, ctx) => {
+      ctx?.onCallTiming?.({ provider: "claude-process", model: "haiku", outcome: "ok", wallMs: 9100, durationMs: 8800,
+        durationApiMs: 4900, inputTokens: 21000, outputTokens: 900, thinkingTokens: 0 });
+      return "summary with a timed call";
+    });
+    const log = { write: vi.fn() };
+    const { res, replied } = replyRecorder();
+    await createCompactHandler(makeConfig("openai"), paths, undefined, log as any)({} as any, res, JSON.stringify({
+      session_id: "call-timing", cwd, transcript_path: transcriptPath,
+    }));
+    expect((await replied).status).toBe(200);
+    expect(log.write).toHaveBeenCalledWith("info", "summarizer.call", expect.objectContaining({
+      session_id: "call-timing", outcome: "ok", wall_ms: 9100, duration_ms: 8800, duration_api_ms: 4900,
+      input_tokens: 21000, output_tokens: 900, thinking_tokens: 0,
+    }));
   });
 });
