@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createLcmPaths } from "../src/lcm-paths.js";
@@ -17,6 +18,16 @@ function fixtureHome(): string {
   return root;
 }
 
+// On Windows os.homedir() reads USERPROFILE, not HOME: a setup that moved only HOME let
+// installer and hook code write the developer's real ~/.claude.
+it("resolves os.homedir() to the sandbox home, in the worker and in its children", () => {
+  const sandboxHome = process.env.HOME;
+  expect(sandboxHome).toContain("lcm-user-home-");
+  expect(homedir()).toBe(sandboxHome);
+  const childHome = execFileSync(process.execPath, ["-e", "process.stdout.write(require('node:os').homedir())"], { encoding: "utf8" });
+  expect(childHome).toBe(sandboxHome);
+});
+
 it("refuses the real lcm home even when LCM_HOME or HOME selects it", () => {
   // A stand-in for the protected home, entirely inside the harness's sandbox.
   const userHome = fixtureHome();
@@ -30,7 +41,7 @@ it("refuses the real lcm home even when LCM_HOME or HOME selects it", () => {
     createLcmPaths(lcmHome());`;
   for (const override of [realHome, ""]) {
     expect(() => execFileSync(process.execPath, ["--input-type=module", "-e", script], {
-      cwd: resolve("."), env: { ...process.env, HOME: userHome, LCM_HOME: override }, stdio: "pipe",
+      cwd: resolve("."), env: { ...process.env, HOME: userHome, USERPROFILE: userHome, LCM_HOME: override }, stdio: "pipe",
     })).toThrow("refused the real lcm home");
   }
 });

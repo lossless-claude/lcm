@@ -88,6 +88,7 @@ function runHook(hook: CommandHook, stdin: string, cwd = pluginRoot, home = fake
       env: {
         PATH: dirname(process.execPath),
         HOME: home,
+        USERPROFILE: home,
         LCM_HOME: join(home, ".lossless-claude"),
         npm_config_cache: join(fakeHome, "npm-cache"),
         TMPDIR: tmpdir(),

@@ -477,8 +477,9 @@ describe("extractOmpArchiveTurnModels", () => {
 /**
  * Without an explicit `ompDir` override, discovery enumerates the same roots
  * `isSafeTranscriptPath` accepts live capture from (src/daemon/project.ts):
- * the active agent directory plus every named OMP profile's. `HOME` is
- * stubbed to a fixture so this never touches the real user's `~/.omp`.
+ * the active agent directory plus every named OMP profile's. `HOME` (and
+ * `USERPROFILE`, which `os.homedir()` reads on Windows) is stubbed to a
+ * fixture so this never touches the real user's `~/.omp`.
  */
 describe("ompDiscoveryRoots", () => {
   let fixture: string;
@@ -486,6 +487,7 @@ describe("ompDiscoveryRoots", () => {
   beforeEach(() => {
     fixture = tempDir("lcm-omp-roots-");
     vi.stubEnv("HOME", fixture);
+    vi.stubEnv("USERPROFILE", fixture);
     vi.stubEnv("PI_CODING_AGENT_DIR", "");
   });
 
@@ -531,6 +533,7 @@ describe("findAllOmpTranscripts — profile roots", () => {
   beforeEach(() => {
     fixture = tempDir("lcm-omp-profile-scan-");
     vi.stubEnv("HOME", fixture);
+    vi.stubEnv("USERPROFILE", fixture);
     vi.stubEnv("PI_CODING_AGENT_DIR", "");
   });
 

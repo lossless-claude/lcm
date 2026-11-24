@@ -212,6 +212,7 @@ describe("uninstall with DryRunServiceDeps", () => {
     mkdirSync(join(fixtureHome, ".claude"));
     writeFileSync(settingsPath, settings);
     vi.stubEnv("HOME", fixtureHome);
+    vi.stubEnv("USERPROFILE", fixtureHome);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 

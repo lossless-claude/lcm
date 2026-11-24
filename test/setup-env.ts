@@ -27,8 +27,13 @@ afterAll(() => {
 // HOME moves too: lcm writes outside its own home (`~/.claude/settings.json` from ensureCore
 // and hook auto-heal), and a child whose LCM_HOME is unset falls back to
 // `$HOME/.lossless-claude`. A directory of its own, not LCM_HOME, so the two stay distinct.
+// On Windows `os.homedir()` reads USERPROFILE, not HOME, so it moves too; HOMEDRIVE and
+// HOMEPATH are dropped so no child can rebuild the real profile path from them.
 const homeDir = mkdtempSync(join(tmpdir(), "lcm-user-home-"));
 process.env.HOME = homeDir;
+process.env.USERPROFILE = homeDir;
+delete process.env.HOMEDRIVE;
+delete process.env.HOMEPATH;
 afterAll(() => {
   rmSync(homeDir, { recursive: true, force: true });
 });
