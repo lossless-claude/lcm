@@ -1964,18 +1964,32 @@ describe("PreCompact reply budget", () => {
     }
   }, 15_000);
 
-  it("keeps the busy skip when the budget leaves no room to wait for an incremental run", async () => {
+  it.each([20_000, 100_000])("answers 202 at once when an incremental run cannot finish within a %i ms budget", async (budget) => {
     vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
-    const run = await startIncrementalRun("no-room-incremental");
+    const sessionId = `no-room-incremental-${budget}`;
+    const run = await startIncrementalRun(sessionId);
     try {
       const { res, replied } = replyRecorder();
+      const begin = Date.now();
       await run.handler({} as any, res, JSON.stringify({
-        session_id: "no-room-incremental", cwd: run.cwd, transcript_path: run.transcriptPath,
-        capture_required: true, reply_budget_ms: 20_000,
+        session_id: sessionId, cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: budget,
       }));
       const reply = await replied;
+      // The run's remainder is several calls; waiting for it would only end in the busy skip.
+      expect(Date.now() - begin).toBeLessThan(5_000);
+      expect(reply.status).toBe(202);
       expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
-      expect(reply.body.summaryOutcome).toMatchObject({ status: "skipped", reason: "busy" });
+      expect(reply.body.summaryOutcome).toMatchObject({ status: "deferred", reason: "over-budget" });
+      const observations = new EventsDb(eventsDbPath(run.cwd, paths));
+      try {
+        expect(observations.getHookObservationSummary(sessionId)).toEqual(expect.arrayContaining([
+          expect.objectContaining({ operation: "capture", status: "completed", count: 1 }),
+          expect.objectContaining({ operation: "summary", status: "deferred", reason: "over-budget", count: 1 }),
+        ]));
+      } finally {
+        observations.close();
+      }
     } finally {
       run.resume.resolve();
       await run.incremental;

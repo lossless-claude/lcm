@@ -1161,9 +1161,10 @@ steps instead of leaving a whole context window for PreCompact. After an `/inges
 that stored new messages (not an import or replay), when the raw tokens outside the
 fresh tail reach `LCM_LEAF_CHUNK_TOKENS`, the daemon sends itself an unawaited,
 unforced `/compact` for that session (`work_class: "live"`), unless the session is
-already compacting. PreCompact then finds about one leaf chunk left; if such a run
-is still in flight, it waits for it while its reply budget leaves room for one more
-call, and then summarizes the residual. The cost is a summarizer call roughly every
+already compacting. PreCompact then finds about one leaf chunk left. If such a run
+is still in flight, PreCompact captures first, then waits for the run only when its
+estimated remainder and one more call fit the reply budget, and summarizes the
+residual; otherwise it answers 202 at once and the run produces the summary. The cost is a summarizer call roughly every
 `LCM_LEAF_CHUNK_TOKENS` of conversation while the session runs, and a backlog count
 on each such ingest.
 

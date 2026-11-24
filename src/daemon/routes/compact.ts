@@ -114,6 +114,20 @@ const compactingNow = new Map<string, InFlightCompaction>();
  */
 const ESTIMATED_SUMMARY_CALL_MS = 30_000;
 
+type SummaryEstimate = { calls: number; rawTokens: number };
+
+/** Leaf calls for the raw backlog outside the fresh tail, plus one condensed call. */
+async function estimateSummaryCalls(capture: SessionCapture, conversationId: number): Promise<SummaryEstimate> {
+  const backlog = await new CompactionEngine(capture.conversationStore, capture.summaryStore, compactEngineConfig())
+    .evaluateLeafTrigger(conversationId);
+  return { calls: Math.ceil(backlog.rawTokensOutsideTail / backlog.threshold) + 1, rawTokens: backlog.rawTokensOutsideTail };
+}
+
+type CaptureStage =
+  | { status: "completed"; messages: number }
+  | { status: "deferred"; reason: "no-capture-result" }
+  | { status: "failed"; reason: "invalid-source" | "capture-error" };
+
 function compactionKey(cwd: string, sessionId: string): string {
   return JSON.stringify([projectId(cwd), sessionId]);
 }
@@ -430,7 +444,8 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     if (session_id === TIMELINE_SESSION_ID || workerExcluded(cwd, session_id, paths, transcript_path)) {
       reply(200, { summary: "", replayOutcome: "skipped", reason: session_id === TIMELINE_SESSION_ID ? "timeline-excluded" : "worker-excluded", }); return;
     }
-    const captureOnly = async () => {
+    // `measure`: also estimate the summary calls left for the session once captured.
+    const captureOnly = async (measure = false): Promise<{ outcome: CaptureStage; estimate?: SummaryEstimate }> => {
       try {
         // A summary for this session may own the project's queue while waiting on
         // an LLM. Capture must finish before the host's PreCompact deadline.
@@ -444,14 +459,16 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           try {
             controller.signal.throwIfAborted();
           runLcmMigrations(db);
-            const captured = await captureForCompact(new SessionCapture(db, projectId(cwd), scrubber, paths), {
+            const sessionCapture = new SessionCapture(db, projectId(cwd), scrubber, paths);
+            const captured = await captureForCompact(sessionCapture, {
               sessionId: session_id, cwd, client, transcriptPath: transcript_path, signal: controller.signal,
             }, paths, log);
-            const outcome = captured
-              ? { status: "completed" as const, messages: captured.records.length }
-              : { status: "deferred" as const, reason: "no-capture-result" as const };
+            const outcome: CaptureStage = captured
+              ? { status: "completed", messages: captured.records.length }
+              : { status: "deferred", reason: "no-capture-result" };
             log.write("info", "precompact.capture", { cwd, session_id, ...outcome });
-            return outcome;
+            const estimate = captured && measure ? await estimateSummaryCalls(sessionCapture, captured.conversationId) : undefined;
+            return { outcome, estimate };
           } finally {
             db.close();
           }
@@ -459,14 +476,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       } catch (err) {
         if (err instanceof CompactionDeadlineError) throw err;
         log.write("error", "precompact.capture_failed", { cwd, session_id, err });
-        return { status: "failed" as const, reason: err instanceof TranscriptSourceError ? "invalid-source" as const : "capture-error" as const };
+        return { outcome: { status: "failed", reason: err instanceof TranscriptSourceError ? "invalid-source" : "capture-error" } };
       }
     };
 
     // `captured`: a Capture this request already ran, which must not run twice.
-    const skipBusy = async (captured?: Awaited<ReturnType<typeof captureOnly>>) => {
+    const skipBusy = async (captured?: CaptureStage) => {
       log.write("info", "compact.skipped", { cwd, session_id, reason: "project-busy" });
-      const captureOutcome = captureRequired ? captured ?? await captureOnly() : undefined;
+      const captureOutcome = captureRequired ? captured ?? (await captureOnly()).outcome : undefined;
       if (captureRequired) log.write("info", "precompact.summary", { cwd, session_id, status: "skipped", reason: "busy" });
       if (captureRequired && captureOutcome) recordPrecompactStages({
         cwd, sessionId: session_id, client, operationId, capture: captureOutcome,
@@ -486,17 +503,30 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
     // Direct requests wait for this session's in-flight result. Deadline-bound
     // hooks and replay callers retain the busy outcome; required Capture still runs.
-    // A PreCompact with a reply budget waits out an incremental run while the budget
-    // still leaves a call for the residual, then summarizes that residual itself. It
-    // captures before waiting: the transcript can be rewritten meanwhile (another
+    // A PreCompact with a reply budget waits out an incremental run when the run's
+    // estimated remainder still leaves a call for the residual, then summarizes that
+    // residual itself; otherwise it answers 202 at once and leaves the summary to the run.
+    // It captures before waiting: the transcript can be rewritten meanwhile (another
     // PreCompact hook may fold rows not stored yet), and a waiter would store the rewrite.
     const key = compactionKey(cwd, session_id);
-    let earlyCapture: Awaited<ReturnType<typeof captureOnly>> | undefined;
+    let earlyCapture: CaptureStage | undefined;
     for (let inFlight = compactingNow.get(key); inFlight; inFlight = compactingNow.get(key)) {
       if (captureRequired && inFlight.incremental && typeof replyBudgetMs === "number" && !earlyCapture) {
-        earlyCapture = await captureOnly();
+        const { outcome, estimate } = await captureOnly(true);
+        earlyCapture = outcome;
         const waitMs = replyBudgetMs - (Date.now() - startedAt) - ESTIMATED_SUMMARY_CALL_MS;
-        if (earlyCapture.status === "completed" && waitMs > 0 && await settlesWithin(inFlight.finished, waitMs)) continue;
+        if (outcome.status === "completed" && estimate) {
+          if (estimate.calls * ESTIMATED_SUMMARY_CALL_MS > waitMs) {
+            log.write("info", "precompact.deferred", { cwd, session_id, estimated_calls: estimate.calls,
+              raw_tokens: estimate.rawTokens, remaining_ms: waitMs + ESTIMATED_SUMMARY_CALL_MS, in_flight: true });
+            log.write("info", "precompact.summary", { cwd, session_id, status: "deferred", reason: "over-budget" });
+            recordPrecompactStages({ cwd, sessionId: session_id, client, operationId, capture: outcome,
+              summary: { status: "deferred", reason: "over-budget" } }, paths, log);
+            reply(202, { summary: "", captureOutcome: outcome, summaryOutcome: { status: "deferred", reason: "over-budget" } });
+            return;
+          }
+          if (await settlesWithin(inFlight.finished, waitMs)) continue;
+        }
       }
       if (captureRequired || precompactVerified || skip_ingest) {
         await skipBusy(earlyCapture);
@@ -649,14 +679,11 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
 
           if (typeof replyBudgetMs === "number") {
-            const backlog = await new CompactionEngine(conversationStore, summaryStore, compactEngineConfig())
-              .evaluateLeafTrigger(conversation.conversationId);
-            // Leaf calls, plus one condensed call.
-            const estimatedCalls = Math.ceil(backlog.rawTokensOutsideTail / backlog.threshold) + 1;
+            const estimate = await estimateSummaryCalls(capture, conversation.conversationId);
             const remainingMs = replyBudgetMs - (Date.now() - startedAt);
-            if (estimatedCalls * ESTIMATED_SUMMARY_CALL_MS > remainingMs) {
-              log.write("info", "precompact.deferred", { cwd, session_id, estimated_calls: estimatedCalls,
-                raw_tokens: backlog.rawTokensOutsideTail, remaining_ms: remainingMs });
+            if (estimate.calls * ESTIMATED_SUMMARY_CALL_MS > remainingMs) {
+              log.write("info", "precompact.deferred", { cwd, session_id, estimated_calls: estimate.calls,
+                raw_tokens: estimate.rawTokens, remaining_ms: remainingMs });
               reply(202, { summary: "", captureOutcome, summaryOutcome: { status: "deferred", reason: "over-budget" } });
             }
           }
