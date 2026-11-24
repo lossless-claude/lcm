@@ -22,6 +22,11 @@ export interface TranscriptToolCall {
   exitCode: number | null;
   /** First result line, retained only as evidence of a harness block. */
   blockReason?: string;
+  /**
+   * Tokenade folded this call's input or output in the transcript, so what was derived from it
+   * describes the placeholder; a call stored before the fold keeps its row.
+   */
+  elided?: boolean;
 }
 
 /** Tool names, lowercased and without a `functions.` prefix, that run a shell command. */

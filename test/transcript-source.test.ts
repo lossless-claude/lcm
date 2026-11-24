@@ -116,6 +116,45 @@ describe("Claude transcript source", () => {
       await expect(source.read(path, compacted(other), ctx(cwd))).rejects.toThrow(TranscriptSourceError);
     });
 
+    it("lets other work run while it compares a long stored history", async () => {
+      const { cwd, path } = fixture();
+      writeFileSync(path, Array.from({ length: 6 }, (_, index) => `${line("user", `key sk-${index}`)}\n`).join(""));
+      const history = Array.from({ length: 6 }, () => ({ role: "user", content: "key [REDACTED]" }));
+      let ticks = 0;
+      const timer = setInterval(() => { ticks++; }, 0);
+      const seen: number[] = [];
+      // Each row differs only by redaction, so each compare scrubs; a slow scrub stands in for a large row.
+      const scrub = (text: string) => {
+        seen.push(ticks);
+        const until = performance.now() + 15;
+        while (performance.now() < until) { /* busy */ }
+        return text.replace(/sk-\d+/g, "[REDACTED]");
+      };
+      try {
+        expect((await source.read(path, compacted(history), { ...ctx(cwd), scrub })).sourceOffset).toBe(6);
+      } finally {
+        clearInterval(timer);
+      }
+      expect(seen.length).toBeGreaterThanOrEqual(6);
+      expect(seen.at(-1)).toBeGreaterThan(seen[0]);
+    });
+
+    it("continues past a stored tool output tokenade has since folded, and only past that", async () => {
+      const { cwd, path } = fixture();
+      const placeholder = "[tokenade:elided 750 tokens on cold resume — recover: tokenade expand-ref 0123456789ab]";
+      const result = (text: string) => JSON.stringify({ message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: text }] } });
+      writeFileSync(path, `${line("user", "one")}\n${result(placeholder)}\n${line("user", "three")}\n`);
+      const history = [{ role: "user", content: "one" }, { role: "tool", content: "build log line\n".repeat(200) }];
+      const delta = await source.read(path, compacted(history), ctx(cwd));
+      expect(delta.sourceOffset).toBe(2);
+      expect(delta.messages.map((message) => message.content)).toEqual(["three"]);
+      // A stored row far shorter than what the placeholder hid is another row: history skipped or repeated one.
+      const shifted = [{ role: "user", content: "one" }, { role: "tool", content: "Bash" }];
+      await expect(source.read(path, compacted(shifted), ctx(cwd))).rejects.toThrow(TranscriptSourceError);
+      writeFileSync(path, `${line("user", "other")}\n${result(placeholder)}\n${line("user", "three")}\n`);
+      await expect(source.read(path, compacted(history), ctx(cwd))).rejects.toThrow(TranscriptSourceError);
+    });
+
     it("does not compare a session compaction never wrote into", async () => {
       const { cwd, path } = fixture();
       appendFileSync(path, `${line("user", "three")}\n`);
@@ -196,6 +235,16 @@ describe("Codex transcript source", () => {
     const first = await source.read(path, undefined, ctx(cwd));
     const rewritten = [{ role: "user", content: "not one" }, { role: "assistant", content: "two" }];
     await expect(source.read(path, stored(rewritten, { ...(first.checkpoint as CodexTranscriptCursor), messageCount: 1 }), ctx(cwd)))
+      .rejects.toThrow(TranscriptSourceError);
+  });
+
+  it("stale cursor: a stored message never stands for a placeholder-shaped one, which tokenade does not write here", async () => {
+    const { cwd, path } = fixture();
+    const first = await source.read(path, undefined, ctx(cwd));
+    const meta = JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd } });
+    const placeholder = "[tokenade:elided 4 tokens on cold resume — recover: tokenade expand-ref 0123456789ab]";
+    writeFileSync(path, `${meta}\n${record("user", "one")}\n${record("assistant", placeholder)}\n`);
+    await expect(source.read(path, stored(first.messages, { ...(first.checkpoint as CodexTranscriptCursor), messageCount: 1 }), ctx(cwd)))
       .rejects.toThrow(TranscriptSourceError);
   });
 
