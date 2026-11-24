@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1927,6 +1927,36 @@ describe("PreCompact reply budget", () => {
       expect(reply.status).toBe(200);
       expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
       expect(reply.body.summaryOutcome).not.toMatchObject({ reason: "busy" });
+    } finally {
+      run.resume.resolve();
+      await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it("captures before waiting for an incremental run, so a transcript rewritten meanwhile is not stored", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    const run = await startIncrementalRun("capture-before-wait");
+    try {
+      const before = await readMessageCount(run.cwd, "capture-before-wait");
+      const { res, replied } = replyRecorder();
+      const precompact = run.handler({} as any, res, JSON.stringify({
+        session_id: "capture-before-wait", cwd: run.cwd, transcript_path: run.transcriptPath,
+        capture_required: true, reply_budget_ms: 600_000,
+      }));
+      // While the PreCompact waits for the run, the tail it was asked to capture is stored.
+      await vi.waitFor(async () => expect(await readMessageCount(run.cwd, "capture-before-wait")).toBe(before + 1),
+        { timeout: 5_000, interval: 50 });
+      // A parallel PreCompact hook then folds that row in the transcript.
+      const folded = "[tokenade:elided 9 tokens on cold resume — recover: tokenade expand-ref 0123456789ab]";
+      writeFileSync(run.transcriptPath, readFileSync(run.transcriptPath, "utf8").replace("tail after the incremental run", folded));
+      run.resume.resolve();
+      await run.incremental;
+      await replied;
+      await precompact;
+      const contents = await readMessageContents(run.cwd, "capture-before-wait");
+      expect(contents).toContain("tail after the incremental run");
+      expect(contents).not.toContain(folded);
     } finally {
       run.resume.resolve();
       await run.incremental;

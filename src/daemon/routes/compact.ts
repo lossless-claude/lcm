@@ -463,9 +463,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
       }
     };
 
-    const skipBusy = async () => {
+    // `captured`: a Capture this request already ran, which must not run twice.
+    const skipBusy = async (captured?: Awaited<ReturnType<typeof captureOnly>>) => {
       log.write("info", "compact.skipped", { cwd, session_id, reason: "project-busy" });
-      const captureOutcome = captureRequired ? await captureOnly() : undefined;
+      const captureOutcome = captureRequired ? captured ?? await captureOnly() : undefined;
       if (captureRequired) log.write("info", "precompact.summary", { cwd, session_id, status: "skipped", reason: "busy" });
       if (captureRequired && captureOutcome) recordPrecompactStages({
         cwd, sessionId: session_id, client, operationId, capture: captureOutcome,
@@ -486,22 +487,28 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     // Direct requests wait for this session's in-flight result. Deadline-bound
     // hooks and replay callers retain the busy outcome; required Capture still runs.
     // A PreCompact with a reply budget waits out an incremental run while the budget
-    // still leaves a call for the residual, then summarizes that residual itself.
+    // still leaves a call for the residual, then summarizes that residual itself. It
+    // captures before waiting: the transcript can be rewritten meanwhile (another
+    // PreCompact hook may fold rows not stored yet), and a waiter would store the rewrite.
     const key = compactionKey(cwd, session_id);
+    let earlyCapture: Awaited<ReturnType<typeof captureOnly>> | undefined;
     for (let inFlight = compactingNow.get(key); inFlight; inFlight = compactingNow.get(key)) {
-      const waitMs = captureRequired && inFlight.incremental && typeof replyBudgetMs === "number"
-        ? replyBudgetMs - (Date.now() - startedAt) - ESTIMATED_SUMMARY_CALL_MS : 0;
-      if (waitMs > 0 && await settlesWithin(inFlight.finished, waitMs)) continue;
+      if (captureRequired && inFlight.incremental && typeof replyBudgetMs === "number" && !earlyCapture) {
+        earlyCapture = await captureOnly();
+        const waitMs = replyBudgetMs - (Date.now() - startedAt) - ESTIMATED_SUMMARY_CALL_MS;
+        if (earlyCapture.status === "completed" && waitMs > 0 && await settlesWithin(inFlight.finished, waitMs)) continue;
+      }
       if (captureRequired || precompactVerified || skip_ingest) {
-        await skipBusy();
+        await skipBusy(earlyCapture);
         return;
       }
       await inFlight.finished;
     }
     if ((captureRequired || precompactVerified) && hasBlockingProjectWork(projectId(cwd))) {
-      await skipBusy();
+      await skipBusy(earlyCapture);
       return;
     }
+    const earlyMessages = earlyCapture?.status === "completed" ? earlyCapture.messages : 0;
     // Check and mark have no await between them, including after a waiter wakes.
     const releaseCompacting = markCompacting(session_id, cwd, !force);
 
@@ -588,7 +595,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
           }
           const captureOutcome = captureRequired
             ? captured
-              ? { status: "completed" as const, messages: captured.records.length }
+              ? { status: "completed" as const, messages: earlyMessages + captured.records.length }
               : { status: "deferred" as const, reason: "no-capture-result" as const }
             : undefined;
           const verification = (captured as TranscriptCaptureResult | undefined)?.verification;
