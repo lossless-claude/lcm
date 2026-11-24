@@ -481,6 +481,19 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     };
 
     // `captured`: a Capture this request already ran, which must not run twice.
+    // A PreCompact that answers before its summary exists still tells the restore that
+    // follows it to replay the saved instructions; that restore cannot wait for the summary.
+    const markCompactedForRestore = async () => {
+      try {
+        await withProjectMutation(projectId(cwd), async () => {
+          const db = openStandaloneLcmConnection(projectDbPath(cwd, paths));
+          try { markSessionCompacted(db, session_id); } finally { db.close(); }
+        });
+      } catch (err) {
+        log.write("warn", "precompact.mark_failed", { cwd, session_id, err });
+      }
+    };
+
     const skipBusy = async (captured?: CaptureStage) => {
       log.write("info", "compact.skipped", { cwd, session_id, reason: "project-busy" });
       const captureOutcome = captureRequired ? captured ?? (await captureOnly()).outcome : undefined;
@@ -522,6 +535,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             log.write("info", "precompact.summary", { cwd, session_id, status: "deferred", reason: "over-budget" });
             recordPrecompactStages({ cwd, sessionId: session_id, client, operationId, capture: outcome,
               summary: { status: "deferred", reason: "over-budget" } }, paths, log);
+            await markCompactedForRestore();
             reply(202, { summary: "", captureOutcome: outcome, summaryOutcome: { status: "deferred", reason: "over-budget" } });
             return;
           }
@@ -593,6 +607,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
 
         return withProjectMutation(pid, async (lease) => {
         const db = getLcmConnection(dbPath);
+        let markedForRestore = false;
         try {
           controller.signal.throwIfAborted();
           runLcmMigrations(db);
@@ -684,6 +699,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             if (estimate.calls * ESTIMATED_SUMMARY_CALL_MS > remainingMs) {
               log.write("info", "precompact.deferred", { cwd, session_id, estimated_calls: estimate.calls,
                 raw_tokens: estimate.rawTokens, remaining_ms: remainingMs });
+              // The restore that follows this PreCompact runs long before the summary ends.
+              markSessionCompacted(db, session_id);
+              markedForRestore = true;
               reply(202, { summary: "", captureOutcome, summaryOutcome: { status: "deferred", reason: "over-budget" } });
             }
           }
@@ -863,8 +881,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             log.write("warn", "compact.meta_failed", { cwd, session_id, err });
           }
 
-          // Tell the restore that follows to replay the saved instructions.
-          markSessionCompacted(db, session_id);
+          // Tell the restore that follows to replay the saved instructions. Only a PreCompact
+          // or a forced run is followed by one; a deferred PreCompact marked before its reply.
+          if (!markedForRestore && (force || captureRequired || precompactVerified)) markSessionCompacted(db, session_id);
 
           const summaryMsg = compactResult.actionTaken
             ? buildCompactionMessage({

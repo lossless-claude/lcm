@@ -14,6 +14,7 @@ import { createLcmPaths } from "../../../src/lcm-paths.js";
 import { DaemonClient } from "../../../src/daemon/client.js";
 import { clearReplayState, createReplayRun, replaySessionsToClear } from "../../../src/replay-resume.js";
 import { EventsDb } from "../../../src/hooks/events-db.js";
+import { wasSessionJustCompacted } from "../../../src/db/session-compactions.js";
 import { eventsDbPath } from "../../../src/db/events-path.js";
 
 const paths = createLcmPaths(lcmHome());
@@ -1808,6 +1809,15 @@ describe("PreCompact reply budget", () => {
     return { res, replied: replied.promise };
   }
 
+  function justCompacted(cwd: string, sessionId: string): boolean {
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    try {
+      return wasSessionJustCompacted(db, sessionId);
+    } finally {
+      db.close();
+    }
+  }
+
   it("answers 202 after Capture when the estimated summary cannot fit, then finishes the summary", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "lcm-precompact-deferred-"));
     dirs.push(cwd);
@@ -1831,6 +1841,8 @@ describe("PreCompact reply budget", () => {
         summaryOutcome: { status: "deferred", reason: "over-budget" },
       });
       expect(await readMessageCount(cwd, "deferred")).toBe(20);
+      // The restore after this PreCompact runs while the summary is still being written.
+      expect(justCompacted(cwd, "deferred")).toBe(true);
     } finally {
       resume.resolve();
       await compacting;
@@ -1884,6 +1896,8 @@ describe("PreCompact reply budget", () => {
       }));
       expect((await replied).body).toMatchObject({ replayOutcome: "no_work" });
       expect(summarize).not.toHaveBeenCalled();
+      // No restore follows an unforced run, so it must not claim the session was just compacted.
+      expect(justCompacted(cwd, "unforced")).toBe(false);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -1981,6 +1995,7 @@ describe("PreCompact reply budget", () => {
       expect(reply.status).toBe(202);
       expect(reply.body.captureOutcome).toMatchObject({ status: "completed", messages: 1 });
       expect(reply.body.summaryOutcome).toMatchObject({ status: "deferred", reason: "over-budget" });
+      expect(justCompacted(run.cwd, sessionId)).toBe(true);
       const observations = new EventsDb(eventsDbPath(run.cwd, paths));
       try {
         expect(observations.getHookObservationSummary(sessionId)).toEqual(expect.arrayContaining([
