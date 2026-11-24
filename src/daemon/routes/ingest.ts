@@ -24,7 +24,7 @@ import { validateCwd } from "../validate-cwd.js";
 import { scheduleProjectLanguageDetection } from "../project-language.js";
 import { noopDaemonLog, type DaemonLog } from "../log.js";
 import { enqueue, withProjectMutation } from "../project-queue.js";
-import { compactingSessionsFor, holdSessionCompaction } from "./compact.js";
+import { holdSessionCompaction, liveCompactionAllowed } from "./compact.js";
 import { CompactionEngine, compactEngineConfig } from "../../compaction.js";
 import { backupProjectDatabase } from "../../claude-rebuild.js";
 import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../../cut-row-repair.js";
@@ -451,8 +451,9 @@ export function createIngestHandler(
       const backfillFirst = input.backfill_before_reply === true;
       if (captured && backfillFirst && !backfill(captured)) incomplete = true;
       sendJson(res, 200, incomplete ? { ...result, incomplete: true } : result);
-      // One leaf chunk at a time while the session runs keeps PreCompact's residual small.
-      if (leafBacklogDue && !compactingSessionsFor(cwd).includes(session_id)) {
+      // Fires once the backlog reaches a leaf chunk; the unforced run then drains the
+      // whole backlog outside the fresh tail, which keeps PreCompact's residual small.
+      if (leafBacklogDue && liveCompactionAllowed(cwd, session_id)) {
         requestCompaction({ session_id, cwd, skip_ingest: true, work_class: "live", force: false, client: input.client });
       }
       // After the response: the scan is O(transcript) and the caller is waiting. Named,

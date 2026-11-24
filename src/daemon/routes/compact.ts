@@ -141,6 +141,24 @@ export function compactingSessionsFor(cwd: string): string[] {
   return [...compactingNow.values()].filter((entry) => entry.projectId === id).map((entry) => entry.sessionId);
 }
 
+/**
+ * How long the live leaf trigger leaves a session alone after its unforced run failed,
+ * so a failing summarizer is not called again on every ingest.
+ */
+export const LIVE_COMPACTION_RETRY_MS = 10 * 60_000;
+const incrementalFailedAt = new Map<string, number>();
+
+/** Whether the live leaf trigger may start an unforced run for this session now. */
+export function liveCompactionAllowed(cwd: string, sessionId: string, now = Date.now()): boolean {
+  const key = compactionKey(cwd, sessionId);
+  if (compactingNow.has(key)) return false;
+  const failedAt = incrementalFailedAt.get(key);
+  if (failedAt === undefined) return true;
+  if (now - failedAt < LIVE_COMPACTION_RETRY_MS) return false;
+  incrementalFailedAt.delete(key);
+  return true;
+}
+
 /** Register an in-flight compaction; returns the release function. */
 export function markCompacting(sessionId: string, cwd: string, incremental = false): () => void {
   const key = compactionKey(cwd, sessionId);
@@ -957,6 +975,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
         });
       }); // end enqueue
 
+      if (!force) incrementalFailedAt.delete(key);
       if (deadlineReplied) return;
       if (result.replayOutcome === "compacted" && "tokensBefore" in result) {
         log.write("info", "compact.done", { cwd, session_id, tokens_before: result.tokensBefore, tokens_after: result.tokensAfter });
@@ -982,6 +1001,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
     } catch (err) {
       if (err instanceof CompactionDeadlineError) return;
       log.write("error", "compact.failed", { cwd, session_id, err });
+      if (!force) incrementalFailedAt.set(key, Date.now());
       if (deadlineReplied) return;
       if (captureRequired) {
         if (captureOutcomeForError?.status !== "completed") {

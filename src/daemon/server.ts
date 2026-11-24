@@ -220,7 +220,9 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
   // Named here (not just for HTTP requests) so a stall during a background task is attributed to it.
   const inFlight = new Set<InFlightRequest>();
   const beginTask: BeginBackgroundTask = (name) => beginBackgroundTask(inFlight, name);
-  // Bound once the server listens: the live leaf trigger calls this daemon back.
+  // Bound once the server listens: the live leaf trigger calls this daemon back. Only
+  // hook ingests reach this route; the scan and SessionEnd use the handler below, which
+  // has no trigger, so a scan cannot start a live run for every session with a backlog.
   let requestLiveCompaction: ((body: Record<string, unknown>) => void) | undefined;
   const requestCompaction = (body: Record<string, unknown>) => requestLiveCompaction?.(body);
   routes.set("POST /ingest", createIngestHandler(config, paths, log, beginTask, requestCompaction));
@@ -238,7 +240,7 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
 
   // Periodic transcript ingestion scan
   const INGEST_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-  const ingestHandler = createIngestHandler(config, paths, log, beginTask, requestCompaction);
+  const ingestHandler = createIngestHandler(config, paths, log, beginTask);
   const ingestInterval = setInterval(() => {
     const endTask = beginBackgroundTask(inFlight, "scan:transcripts");
     void scanForTranscripts(config, paths, ingestHandler, log).finally(endTask);

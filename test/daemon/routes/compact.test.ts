@@ -62,7 +62,9 @@ import { createOmpProcessSummarizer } from "../../../src/llm/omp-process.js";
 import { createAnthropicSummarizer } from "../../../src/llm/anthropic.js";
 import { createOpenAISummarizer } from "../../../src/llm/openai.js";
 import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-language.js";
-import { createCompactHandler, buildCompactionMessage, markCompacting } from "../../../src/daemon/routes/compact.js";
+import {
+  createCompactHandler, buildCompactionMessage, markCompacting, liveCompactionAllowed, LIVE_COMPACTION_RETRY_MS,
+} from "../../../src/daemon/routes/compact.js";
 import { createIngestHandler } from "../../../src/daemon/routes/ingest.js";
 import { createReplayResetHandler } from "../../../src/daemon/routes/replay-reset.js";
 import { enqueue } from "../../../src/daemon/project-queue.js";
@@ -2008,6 +2010,44 @@ describe("PreCompact reply budget", () => {
     } finally {
       run.resume.resolve();
       await run.incremental;
+      vi.unstubAllEnvs();
+    }
+  }, 15_000);
+
+  it("backs the live leaf trigger off a session whose unforced run failed", async () => {
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1000");
+    try {
+      const cwd = mkdtempSync(join(tmpdir(), "lcm-live-failing-"));
+      dirs.push(cwd);
+      const failing = async () => { throw new Error("summarizer unavailable"); };
+      const config = makeConfig("openai");
+      config.compaction.liveLeafTrigger = true;
+      for (const [sessionId, force] of [["live-failing", false], ["forced-failing", true]] as const) {
+        const transcriptPath = writeBacklog(cwd, sessionId);
+        vi.mocked(createOpenAISummarizer).mockReturnValueOnce(failing);
+        const { res, replied } = replyRecorder();
+        await createCompactHandler(config, paths)({} as any, res, JSON.stringify({ session_id: sessionId, cwd, transcript_path: transcriptPath, force }));
+        expect((await replied).status).toBe(500);
+      }
+      // A failed forced run is not the trigger's, and does not hold the trigger back.
+      expect(liveCompactionAllowed(cwd, "forced-failing")).toBe(true);
+      expect(liveCompactionAllowed(cwd, "live-failing")).toBe(false);
+
+      const transcriptPath = join(cwd, "live-failing.jsonl");
+      const ingest = async () => {
+        appendFileSync(transcriptPath, Array.from({ length: 10 }, (_, index) => JSON.stringify({
+          message: { role: index % 2 ? "assistant" : "user", content: `more ${index} ${"content for compaction ".repeat(100)}` },
+        })).join("\n") + "\n");
+        const requestCompaction = vi.fn();
+        await createIngestHandler(config, paths, undefined, undefined, requestCompaction)({} as any, mockRes().res, JSON.stringify({
+          session_id: "live-failing", cwd, transcript_path: transcriptPath,
+        }));
+        return requestCompaction.mock.calls.length;
+      };
+      expect(await ingest()).toBe(0);
+      expect(liveCompactionAllowed(cwd, "live-failing", Date.now() + LIVE_COMPACTION_RETRY_MS)).toBe(true);
+      expect(await ingest()).toBe(1);
+    } finally {
       vi.unstubAllEnvs();
     }
   }, 15_000);
