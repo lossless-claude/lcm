@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { registerDaemonActivity } from "../../src/daemon/lifecycle.js";
 
 const execute = promisify(execFile);
@@ -48,7 +49,7 @@ it.each([1, 2])("held stop waits for %i concurrent startup(s) before claiming an
   const env = { ...process.env, HOME: root, LCM_HOME: root };
   const cli = resolve("dist/bin/lcm.js");
   const starts = Array.from({ length: count }, () => execute(process.execPath,
-    ["--import", preload, cli, "daemon", "start", "--automatic"], { env, timeout: 15000 }));
+    ["--import", pathToFileURL(preload).href, cli, "daemon", "start", "--automatic"], { env, timeout: 15000 }));
   // Attach rejection handlers immediately: cancellation may precede the assertion.
   const outcomes = starts.map((start) => start.then(() => ({ code: 0, stderr: "", signal: null }),
     (error: { code: number | null; stderr: string; signal: string | null }) => error));

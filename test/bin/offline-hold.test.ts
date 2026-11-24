@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { writeHold } from "../../src/daemon/hold.js";
 
 const execute = promisify(execFile);
@@ -73,7 +74,7 @@ it("held stop drains an admitted offline import without requiring a daemon", asy
       await delay(10);
     }
   }
-  const importing = execute(process.execPath, ["--import", preload, cli, "import-knowledge", input], { cwd: root, env, timeout: 15000 });
+  const importing = execute(process.execPath, ["--import", pathToFileURL(preload).href, cli, "import-knowledge", input], { cwd: root, env, timeout: 15000 });
   void importing.catch(() => {});
   let stop: ReturnType<typeof execute> | undefined;
   try {

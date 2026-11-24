@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { readHold, writeHold } from "../../src/daemon/hold.js";
 
 const execute = promisify(execFile);
@@ -23,7 +24,7 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 const restart = (...args: string[]) => execute(process.execPath,
-  ["--import", preload, resolve("dist/bin/lcm.js"), "daemon", "restart", ...args], {
+  ["--import", pathToFileURL(preload).href, resolve("dist/bin/lcm.js"), "daemon", "restart", ...args], {
     env: { ...process.env, HOME: root, LCM_HOME: root }, timeout: 10000,
   });
 
