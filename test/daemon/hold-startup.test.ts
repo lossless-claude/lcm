@@ -55,7 +55,7 @@ it("function hooks preserve a hold and resume immediately after expiry without a
     http: { fetch: async () => { throw new Error("offline"); } },
     process: { run: async (args: string[]) => {
       const command = args[2];
-      if (command.includes("__CONFIG__")) return { stdout: `\n__CONFIG__\n{}\n__TMPDIR__\n${dir}`, stderr: "", exitCode: 0 };
+      if (command.includes("__CONFIG__")) return { stdout: `\n__CONFIG__\n{}`, stderr: "", exitCode: 0 };
       commands.push(command);
       const suffix = command.split("exec lcm daemon start ")[1].split(" ");
       try {

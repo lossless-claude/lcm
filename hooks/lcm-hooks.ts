@@ -36,7 +36,7 @@ const CAPTURED_TOOLS = new Set([
   "Read", "Edit", "Write", "Glob", "Grep", "TaskCreate", "TaskUpdate", "Skill",
 ]);
 const DEFAULT_PORT = 3737;
-/** Fallback when the host command cannot report TMPDIR; matches Node os.tmpdir() on POSIX. */
+/** Last resort when the environment names no temp dir, as in Node's os.tmpdir() on POSIX. */
 const DEFAULT_TMP_DIR = "/tmp";
 /** Same default as hooks.snapshotIntervalSec for the Stop command hook: one ingest a minute. */
 const INGEST_INTERVAL_MS = 60_000;
@@ -66,7 +66,7 @@ lcm_store(text: "<what contradicts it>", tags: ["signal:memory_vote", "vote:-1",
 "Not relevant here" is not a -1 — only a real contradiction is.
 </learning-instruction>`;
 
-/** What the module cannot read for itself: everything outside $.fs's project-and-temp reach. */
+/** Read once per load: the daemon's address and token, outside $.fs's reach, and the command hooks' temp dir. */
 type HostEnv = { port: number; token: string | null; tmpDir: string };
 let hostEnv: Promise<HostEnv> | null = null;
 /** Routes the running daemon answered 404 for: an older lcm build. Logged once each, not per call. */
@@ -182,29 +182,55 @@ function parsePort(configJson: string): number {
   }
 }
 
-// The daemon's port and bearer token live under the lcm home, and TMPDIR is an
-// environment value; neither is reachable through $.fs (project and temp dir only), so
-// one host command reads all three once per module load. LCM_HOME moves that home, which
-// is what lets a sandbox run this module without touching the host's own lcm state.
+// The daemon's port and bearer token live under the lcm home, which $.fs cannot reach
+// (project and temp dir only), so one host command reads both once per module load.
+// LCM_HOME moves that home, which is what lets a sandbox run this module without
+// touching the host's own lcm state.
 function readHostEnv($: EngineInterface): Promise<HostEnv> {
-  hostEnv ??= $.process.run(["sh", "-c",
-    // Trimmed before the emptiness test, so a blank LCM_HOME falls back here exactly as
-    // it does in lcmHome(); otherwise the two sides disagree about the root.
-    'H=$(printf %s "${LCM_HOME:-}" | sed "s/^[[:space:]]*//; s/[[:space:]]*$//"); '
-    + '[ -n "$H" ] || H="$HOME/.lossless-claude"; '
-    + 'cat "$H/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; '
-    + 'cat "$H/config.json" 2>/dev/null; echo; echo "__TMPDIR__"; '
-    + 'printf %s "${TMPDIR:-/tmp}"',
-  ]).then(({ stdout }) => {
-    const [tokenPart, afterToken = ""] = stdout.split("__CONFIG__");
-    const [configPart, tmpPart = ""] = afterToken.split("__TMPDIR__");
-    return {
-      port: parsePort(configPart),
-      token: tokenPart.trim() || null,
-      tmpDir: tmpPart.trim().replace(/\/+$/, "") || DEFAULT_TMP_DIR,
-    };
-  }, () => ({ port: DEFAULT_PORT, token: null, tmpDir: DEFAULT_TMP_DIR }));
+  hostEnv ??= Promise.all([
+    $.process.run(["sh", "-c",
+      // Trimmed before the emptiness test, so a blank LCM_HOME falls back here exactly as
+      // it does in lcmHome(); otherwise the two sides disagree about the root.
+      'H=$(printf %s "${LCM_HOME:-}" | sed "s/^[[:space:]]*//; s/[[:space:]]*$//"); '
+      + '[ -n "$H" ] || H="$HOME/.lossless-claude"; '
+      + 'cat "$H/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; '
+      + 'cat "$H/config.json" 2>/dev/null',
+    ]).then(({ stdout }) => {
+      const [tokenPart, configPart = ""] = stdout.split("__CONFIG__");
+      return { port: parsePort(configPart), token: tokenPart.trim() || null };
+    }, () => ({ port: DEFAULT_PORT, token: null })),
+    readTmpDir($),
+  ]).then(([daemon, tmpDir]) => ({ ...daemon, tmpDir }));
   return hostEnv;
+}
+
+/**
+ * The temp dir as Node's os.tmpdir() names it in the command hooks, which look for the
+ * claim and the hook snapshots there (src/hooks/session-claim.ts,
+ * src/doctor/hook-snapshots.ts). Read from this process's environment, which those hooks
+ * inherit, rather than from a shell: Git Bash answers with its own /tmp, which $.fs on
+ * Windows takes for C:\tmp, so the command hooks never saw the claim and both paths
+ * captured every event.
+ */
+async function readTmpDir($: EngineInterface): Promise<string> {
+  try {
+    // OS alone does not mark Windows: a parent that spawns Claude Code with an env of its
+    // own drops it, while Windows always puts SystemRoot back.
+    const systemRoot = await $.env.get("SystemRoot") || await $.env.get("windir");
+    if (await $.env.get("OS") === "Windows_NT" || systemRoot) {
+      const dir = await $.env.get("TEMP") || await $.env.get("TMP")
+        || (systemRoot ? `${systemRoot}\\temp` : DEFAULT_TMP_DIR);
+      return dir.length > 1 && dir.endsWith("\\") && !dir.endsWith(":\\") ? dir.slice(0, -1) : dir;
+    }
+    const dir = await $.env.get("TMPDIR") || await $.env.get("TMP") || await $.env.get("TEMP")
+      || DEFAULT_TMP_DIR;
+    return dir.length > 1 && dir.endsWith("/") ? dir.slice(0, -1) : dir;
+  } catch {
+    // On Windows this fallback is the C:\tmp split again, so it must not pass silently.
+    try { $.ui.log("[lcm] could not read the temp dir from the environment; the command hooks may not see this session's claim and may capture it again"); }
+    catch { /* logging is best effort */ }
+    return DEFAULT_TMP_DIR;
+  }
 }
 
 /**

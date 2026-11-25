@@ -7,9 +7,10 @@ const HOST_REQUEST_CAP_MS = 5_000;
 async function harness(failure: Error) {
   const handlers = new Map<string, (...args: any[]) => any>();
   const engine = {
+    env: { get: vi.fn(async () => undefined) },
     session: { id: vi.fn(async () => "session-1"), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async (args: string[]) => args[2].includes("__CONFIG__")
-      ? { stdout: "\n__CONFIG__\n{}\n__TMPDIR__\n/tmp", exitCode: 0 }
+      ? { stdout: "\n__CONFIG__\n{}", exitCode: 0 }
       : { stdout: "", stderr: "", exitCode: 0 }) },
     fs: { write: vi.fn(async () => undefined) },
     clock: { sleep: vi.fn(() => new Promise<void>(() => {})) },
@@ -50,11 +51,12 @@ async function startSession(script: { health: Answer; polls: Answer[]; hostEnvMs
   let parked!: () => void;
   const pollerParked = new Promise<void>((resolve) => { parked = resolve; });
   const engine = {
+    env: { get: vi.fn(async () => undefined) },
     session: { id: vi.fn(async () => "session-1"), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async (args: string[]) => {
       if (!args[2].includes("__CONFIG__")) return { stdout: "", stderr: "", exitCode: 0 };
       elapsed += script.hostEnvMs ?? 0;
-      return { stdout: "\n__CONFIG__\n{}\n__TMPDIR__\n/tmp", exitCode: 0 };
+      return { stdout: "\n__CONFIG__\n{}", exitCode: 0 };
     }) },
     fs: { write: vi.fn(async () => undefined) },
     clock: { after: vi.fn((_ms: number, callback: () => void) => callback()), sleep: vi.fn(() => new Promise<void>(() => {})) },
@@ -194,7 +196,7 @@ describe("function-hook daemon transport failures", () => {
       const port = (server.address() as AddressInfo).port;
       const { engine, fire } = await harness(new Error("unused"));
       engine.process.run.mockResolvedValueOnce({
-        stdout: `\n__CONFIG__\n{"daemon":{"port":${port}}}\n__TMPDIR__\n/tmp`, exitCode: 0,
+        stdout: `\n__CONFIG__\n{"daemon":{"port":${port}}}`, exitCode: 0,
       });
       engine.http.fetch.mockReset().mockImplementation(async (url: string, init: RequestInit) => {
         const response = await fetch(url, { ...init, signal: AbortSignal.timeout(1_200) });
