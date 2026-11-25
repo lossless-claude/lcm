@@ -323,11 +323,14 @@ function registerSessionEnd(on: On, shadow?: ShadowSessionState): void {
   });
 }
 
-/** When this module last started the daemon. A failed start clears it, so only one that worked holds off the next. */
-let lastDaemonStartAt = 0;
+/** No start before this: a minute after a start that worked, a backoff after one that failed. */
+let nextDaemonStartAt = 0;
+/** Failed starts in a row. Each doubles the backoff, so a daemon that cannot come up is not respawned per event. */
+let failedDaemonStarts = 0;
 /** The start in flight: every caller that finds the daemon down meanwhile waits on it, then retries. */
 let daemonStart: Promise<boolean> | null = null;
 const DAEMON_START_COOLDOWN_MS = 60_000;
+const DAEMON_START_BACKOFF_MS = 15_000;
 const DAEMON_START_TIMEOUT_MS = 15_000;
 const HEALTH_PROBE_TIMEOUT_MS = 500;
 const DAEMON_POST_TIMEOUT_MS = 5_000;
@@ -352,14 +355,17 @@ function startDaemon($: EngineInterface): Promise<boolean> {
   return daemonStart;
 }
 async function launchDaemon($: EngineInterface): Promise<boolean> {
-  if (Date.now() - lastDaemonStartAt < DAEMON_START_COOLDOWN_MS) return false;
-  lastDaemonStartAt = Date.now();
+  if (Date.now() < nextDaemonStartAt) return false;
   const run = await $.process.run(
     ["sh", "-c", 'command -v lcm >/dev/null 2>&1 || exit 127; exec lcm daemon start --detach --automatic'],
     { timeoutMs: DAEMON_START_TIMEOUT_MS },
   ).catch(() => null);
-  if (run?.exitCode !== 0) lastDaemonStartAt = 0;
+  // A hold leaves the next call free to try again once it is released.
   if (run?.exitCode === EXIT_DAEMON_HELD) return false;
+  if (run?.exitCode === 0) failedDaemonStarts = 0;
+  nextDaemonStartAt = Date.now() + (run?.exitCode === 0
+    ? DAEMON_START_COOLDOWN_MS
+    : Math.min(DAEMON_START_BACKOFF_MS * 2 ** failedDaemonStarts++, DAEMON_START_COOLDOWN_MS));
   return reportDaemonLaunch($, run);
 }
 function reportDaemonLaunch($: EngineInterface, run: Awaited<ReturnType<EngineInterface["process"]["run"]>> | null): boolean {
