@@ -36,7 +36,7 @@ const CAPTURED_TOOLS = new Set([
   "Read", "Edit", "Write", "Glob", "Grep", "TaskCreate", "TaskUpdate", "Skill",
 ]);
 const DEFAULT_PORT = 3737;
-/** Fallback when the host command cannot report TMPDIR; matches Node os.tmpdir() on POSIX. */
+/** Last resort when the environment names no temp dir, as in Node's os.tmpdir() on POSIX. */
 const DEFAULT_TMP_DIR = "/tmp";
 /** Same default as hooks.snapshotIntervalSec for the Stop command hook: one ingest a minute. */
 const INGEST_INTERVAL_MS = 60_000;
@@ -66,7 +66,7 @@ lcm_store(text: "<what contradicts it>", tags: ["signal:memory_vote", "vote:-1",
 "Not relevant here" is not a -1 — only a real contradiction is.
 </learning-instruction>`;
 
-/** What the module cannot read for itself: everything outside $.fs's project-and-temp reach. */
+/** Read once per load: the daemon's address and token, outside $.fs's reach, and the command hooks' temp dir. */
 type HostEnv = { port: number; token: string | null; tmpDir: string };
 let hostEnv: Promise<HostEnv> | null = null;
 /** Routes the running daemon answered 404 for: an older lcm build. Logged once each, not per call. */
@@ -182,29 +182,55 @@ function parsePort(configJson: string): number {
   }
 }
 
-// The daemon's port and bearer token live under the lcm home, and TMPDIR is an
-// environment value; neither is reachable through $.fs (project and temp dir only), so
-// one host command reads all three once per module load. LCM_HOME moves that home, which
-// is what lets a sandbox run this module without touching the host's own lcm state.
+// The daemon's port and bearer token live under the lcm home, which $.fs cannot reach
+// (project and temp dir only), so one host command reads both once per module load.
+// LCM_HOME moves that home, which is what lets a sandbox run this module without
+// touching the host's own lcm state.
 function readHostEnv($: EngineInterface): Promise<HostEnv> {
-  hostEnv ??= $.process.run(["sh", "-c",
-    // Trimmed before the emptiness test, so a blank LCM_HOME falls back here exactly as
-    // it does in lcmHome(); otherwise the two sides disagree about the root.
-    'H=$(printf %s "${LCM_HOME:-}" | sed "s/^[[:space:]]*//; s/[[:space:]]*$//"); '
-    + '[ -n "$H" ] || H="$HOME/.lossless-claude"; '
-    + 'cat "$H/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; '
-    + 'cat "$H/config.json" 2>/dev/null; echo; echo "__TMPDIR__"; '
-    + 'printf %s "${TMPDIR:-/tmp}"',
-  ]).then(({ stdout }) => {
-    const [tokenPart, afterToken = ""] = stdout.split("__CONFIG__");
-    const [configPart, tmpPart = ""] = afterToken.split("__TMPDIR__");
-    return {
-      port: parsePort(configPart),
-      token: tokenPart.trim() || null,
-      tmpDir: tmpPart.trim().replace(/\/+$/, "") || DEFAULT_TMP_DIR,
-    };
-  }, () => ({ port: DEFAULT_PORT, token: null, tmpDir: DEFAULT_TMP_DIR }));
+  hostEnv ??= Promise.all([
+    $.process.run(["sh", "-c",
+      // Trimmed before the emptiness test, so a blank LCM_HOME falls back here exactly as
+      // it does in lcmHome(); otherwise the two sides disagree about the root.
+      'H=$(printf %s "${LCM_HOME:-}" | sed "s/^[[:space:]]*//; s/[[:space:]]*$//"); '
+      + '[ -n "$H" ] || H="$HOME/.lossless-claude"; '
+      + 'cat "$H/daemon.token" 2>/dev/null; echo; echo "__CONFIG__"; '
+      + 'cat "$H/config.json" 2>/dev/null',
+    ]).then(({ stdout }) => {
+      const [tokenPart, configPart = ""] = stdout.split("__CONFIG__");
+      return { port: parsePort(configPart), token: tokenPart.trim() || null };
+    }, () => ({ port: DEFAULT_PORT, token: null })),
+    readTmpDir($),
+  ]).then(([daemon, tmpDir]) => ({ ...daemon, tmpDir }));
   return hostEnv;
+}
+
+/**
+ * The temp dir as Node's os.tmpdir() names it in the command hooks, which look for the
+ * claim and the hook snapshots there (src/hooks/session-claim.ts,
+ * src/doctor/hook-snapshots.ts). Read from this process's environment, which those hooks
+ * inherit, rather than from a shell: Git Bash answers with its own /tmp, which $.fs on
+ * Windows takes for C:\tmp, so the command hooks never saw the claim and both paths
+ * captured every event.
+ */
+async function readTmpDir($: EngineInterface): Promise<string> {
+  try {
+    // OS alone does not mark Windows: a parent that spawns Claude Code with an env of its
+    // own drops it, while Windows always puts SystemRoot back.
+    const systemRoot = await $.env.get("SystemRoot") || await $.env.get("windir");
+    if (await $.env.get("OS") === "Windows_NT" || systemRoot) {
+      const dir = await $.env.get("TEMP") || await $.env.get("TMP")
+        || (systemRoot ? `${systemRoot}\\temp` : DEFAULT_TMP_DIR);
+      return dir.length > 1 && dir.endsWith("\\") && !dir.endsWith(":\\") ? dir.slice(0, -1) : dir;
+    }
+    const dir = await $.env.get("TMPDIR") || await $.env.get("TMP") || await $.env.get("TEMP")
+      || DEFAULT_TMP_DIR;
+    return dir.length > 1 && dir.endsWith("/") ? dir.slice(0, -1) : dir;
+  } catch {
+    // On Windows this fallback is the C:\tmp split again, so it must not pass silently.
+    try { $.ui.log("[lcm] could not read the temp dir from the environment; the command hooks may not see this session's claim and may capture it again"); }
+    catch { /* logging is best effort */ }
+    return DEFAULT_TMP_DIR;
+  }
 }
 
 /**
@@ -225,16 +251,27 @@ async function writeClaim($: EngineInterface, sessionId: string, ended?: string)
 /** Sessions whose claim could not be written, so the failure is logged once, not per event. */
 const unclaimedSessions = new Set<string>();
 
+/**
+ * Whether the daemon's last answer to this module refused its token, or never came because
+ * nothing listened even after a start: a token or port the shell read differently from
+ * Node, or one cached from before the daemon wrote it. The module then delivers nothing,
+ * so the claim is withdrawn and the command hooks, which resolve both as the daemon does,
+ * record instead. One flag for the process, as there is one daemon for all its sessions.
+ */
+let daemonUnusable = false;
+
 async function claimSession($: EngineInterface, sessionId: string, hook: string): Promise<void> {
-  let claimed = true;
-  await writeClaim($, sessionId).catch((error: unknown) => {
-    claimed = false;
+  const withdrawn = daemonUnusable;
+  let written = true;
+  await writeClaim($, sessionId, withdrawn ? "daemon-unusable" : undefined).catch((error: unknown) => {
+    written = false;
     if (unclaimedSessions.has(sessionId)) return;
     unclaimedSessions.add(sessionId);
     $.ui.log(`[lcm] could not claim the session, command hooks stay active: ${String(error)}`);
   });
-  noteHook(sessionId, hook, "claim", "execution", claimed ? "completed" : "failed",
-    claimed ? "" : "write-failed");
+  const [status, reason] = !written ? ["failed", "write-failed"]
+    : withdrawn ? ["skipped", "daemon-unusable"] : ["completed", ""];
+  noteHook(sessionId, hook, "claim", "execution", status, reason);
 }
 
 /**
@@ -248,6 +285,10 @@ function registerSessionClaim(on: On, shadow?: ShadowSessionState): void {
   on("classic.SessionStart", async ($, e, next) => {
     if (["clear", "resume", "fork"].includes(e.source)) shadow?.reset(e.session_id);
     await claimSession($, e.session_id, "classic.SessionStart");
+    // The SessionStart command hook this claim silences sent the catch-up sweep on every
+    // source; session.start covers startup only. A repeat is harmless: the daemon skips
+    // conversations it is already compacting.
+    if (e.source !== "startup") void postDaemon($, "/session-start-compact", { cwd: e.cwd, session_id: e.session_id });
     return next(e);
   });
   on("classic.UserPromptSubmit", async ($, e, next) => {
@@ -282,9 +323,14 @@ function registerSessionEnd(on: On, shadow?: ShadowSessionState): void {
   });
 }
 
-/** Last time this module asked the host to start the daemon; one attempt per cooldown window. */
-let lastDaemonStartAt = 0;
+/** No start before this: a minute after a start that worked, a backoff after one that failed. */
+let nextDaemonStartAt = 0;
+/** Failed starts in a row. Each doubles the backoff, so a daemon that cannot come up is not respawned per event. */
+let failedDaemonStarts = 0;
+/** The start in flight: every caller that finds the daemon down meanwhile waits on it, then retries. */
+let daemonStart: Promise<boolean> | null = null;
 const DAEMON_START_COOLDOWN_MS = 60_000;
+const DAEMON_START_BACKOFF_MS = 15_000;
 const DAEMON_START_TIMEOUT_MS = 15_000;
 const HEALTH_PROBE_TIMEOUT_MS = 500;
 const DAEMON_POST_TIMEOUT_MS = 5_000;
@@ -304,18 +350,22 @@ let warnedNoLcmBinary = false;
  * between the idle exit and the next SessionStart is lost. `lcm daemon start --detach`
  * spawns the daemon and waits until /health answers.
  */
-async function startDaemon($: EngineInterface): Promise<boolean> {
-  const now = Date.now();
-  if (now - lastDaemonStartAt < DAEMON_START_COOLDOWN_MS) return false;
-  lastDaemonStartAt = now;
+function startDaemon($: EngineInterface): Promise<boolean> {
+  daemonStart ??= launchDaemon($).finally(() => { daemonStart = null; });
+  return daemonStart;
+}
+async function launchDaemon($: EngineInterface): Promise<boolean> {
+  if (Date.now() < nextDaemonStartAt) return false;
   const run = await $.process.run(
     ["sh", "-c", 'command -v lcm >/dev/null 2>&1 || exit 127; exec lcm daemon start --detach --automatic'],
     { timeoutMs: DAEMON_START_TIMEOUT_MS },
   ).catch(() => null);
-  if (run?.exitCode === EXIT_DAEMON_HELD) {
-    if (lastDaemonStartAt === now) lastDaemonStartAt = 0;
-    return false;
-  }
+  // A hold leaves the next call free to try again once it is released.
+  if (run?.exitCode === EXIT_DAEMON_HELD) return false;
+  if (run?.exitCode === 0) failedDaemonStarts = 0;
+  nextDaemonStartAt = Date.now() + (run?.exitCode === 0
+    ? DAEMON_START_COOLDOWN_MS
+    : Math.min(DAEMON_START_BACKOFF_MS * 2 ** failedDaemonStarts++, DAEMON_START_COOLDOWN_MS));
   return reportDaemonLaunch($, run);
 }
 function reportDaemonLaunch($: EngineInterface, run: Awaited<ReturnType<EngineInterface["process"]["run"]>> | null): boolean {
@@ -423,12 +473,16 @@ async function postOnce($: EngineInterface, route: string, body: unknown): Promi
  * route or cannot be reached. Only a refused connection starts the daemon and retries once.
  */
 async function postDaemonOutcome($: EngineInterface, route: string, body: unknown): Promise<PostOutcome> {
-  const first = await postOnce($, route, body);
-  if (!first.connectionFailed) return first;
-  if (!(await startDaemon($))) return first;
-  const second = await postOnce($, route, body);
-  if (second.connectionFailed) $.ui.log(`[lcm] ${route}: daemon still unreachable after start`);
-  return second;
+  let outcome = await postOnce($, route, body);
+  if (outcome.connectionFailed && await startDaemon($)) {
+    outcome = await postOnce($, route, body);
+    if (outcome.connectionFailed) $.ui.log(`[lcm] ${route}: daemon still unreachable after start`);
+  }
+  // A busy listener or a missing route leaves the flag alone: the command hooks would
+  // meet the same daemon.
+  if (outcome.body) daemonUnusable = false;
+  else if (outcome.connectionFailed || outcome.httpStatus === 401) daemonUnusable = true;
+  return outcome;
 }
 
 async function postDaemon($: EngineInterface, route: string, body: unknown): Promise<Record<string, unknown> | null> {

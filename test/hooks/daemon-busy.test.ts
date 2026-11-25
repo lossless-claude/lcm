@@ -7,9 +7,10 @@ const HOST_REQUEST_CAP_MS = 5_000;
 async function harness(failure: Error) {
   const handlers = new Map<string, (...args: any[]) => any>();
   const engine = {
+    env: { get: vi.fn(async () => undefined) },
     session: { id: vi.fn(async () => "session-1"), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async (args: string[]) => args[2].includes("__CONFIG__")
-      ? { stdout: "\n__CONFIG__\n{}\n__TMPDIR__\n/tmp", exitCode: 0 }
+      ? { stdout: "\n__CONFIG__\n{}", exitCode: 0 }
       : { stdout: "", stderr: "", exitCode: 0 }) },
     fs: { write: vi.fn(async () => undefined) },
     clock: { sleep: vi.fn(() => new Promise<void>(() => {})) },
@@ -50,11 +51,12 @@ async function startSession(script: { health: Answer; polls: Answer[]; hostEnvMs
   let parked!: () => void;
   const pollerParked = new Promise<void>((resolve) => { parked = resolve; });
   const engine = {
+    env: { get: vi.fn(async () => undefined) },
     session: { id: vi.fn(async () => "session-1"), cwd: vi.fn(async () => "/proj") },
     process: { run: vi.fn(async (args: string[]) => {
       if (!args[2].includes("__CONFIG__")) return { stdout: "", stderr: "", exitCode: 0 };
       elapsed += script.hostEnvMs ?? 0;
-      return { stdout: "\n__CONFIG__\n{}\n__TMPDIR__\n/tmp", exitCode: 0 };
+      return { stdout: "\n__CONFIG__\n{}", exitCode: 0 };
     }) },
     fs: { write: vi.fn(async () => undefined) },
     clock: { after: vi.fn((_ms: number, callback: () => void) => callback()), sleep: vi.fn(() => new Promise<void>(() => {})) },
@@ -194,7 +196,7 @@ describe("function-hook daemon transport failures", () => {
       const port = (server.address() as AddressInfo).port;
       const { engine, fire } = await harness(new Error("unused"));
       engine.process.run.mockResolvedValueOnce({
-        stdout: `\n__CONFIG__\n{"daemon":{"port":${port}}}\n__TMPDIR__\n/tmp`, exitCode: 0,
+        stdout: `\n__CONFIG__\n{"daemon":{"port":${port}}}`, exitCode: 0,
       });
       engine.http.fetch.mockReset().mockImplementation(async (url: string, init: RequestInit) => {
         const response = await fetch(url, { ...init, signal: AbortSignal.timeout(1_200) });
@@ -237,5 +239,80 @@ describe("function-hook daemon transport failures", () => {
     // A 401 clears the cached environment, so the next poll reads it again first.
     const polls = [{ status: 401 }, { error: new Error("fetch failed") }];
     expect(await startSession({ health: { status: 200 }, polls, hostEnvMs: HOST_REQUEST_CAP_MS })).toBe(1);
+  });
+
+  const daemonStarts = (engine: Awaited<ReturnType<typeof harness>>["engine"]) =>
+    engine.process.run.mock.calls.filter(([args]) => args[2].includes("lcm daemon start")).length;
+
+  it("lets a tool call that arrives while the daemon starts wait for that start and retry", async () => {
+    const { engine, fire } = await harness(new Error("unused"));
+    let finishStart!: () => void;
+    const starting = new Promise<void>((resolve) => { finishStart = resolve; });
+    let listening = false;
+    engine.process.run.mockImplementation(async (args: string[]) => {
+      if (args[2].includes("__CONFIG__")) return { stdout: "\n__CONFIG__\n{}", exitCode: 0 };
+      await starting;
+      listening = true;
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    engine.http.fetch.mockReset().mockImplementation(async () => {
+      if (!listening) throw refused.error;
+      return { ok: true, status: 200, text: "{}" };
+    });
+    const calls = [fire(), fire()];
+    await vi.waitFor(() => expect(engine.http.fetch).toHaveBeenCalledTimes(2));
+    finishStart();
+    await Promise.all(calls);
+    expect(daemonStarts(engine)).toBe(1);
+    expect(engine.http.fetch).toHaveBeenCalledTimes(4); // both calls retried after the one start
+  });
+
+  /** The harness with a daemon that refuses every connection, and a clock the test moves. */
+  async function refusingDaemon(start: () => { stderr: string; exitCode: number }) {
+    const { engine, fire } = await harness(new Error("unused"));
+    const clock = { elapsed: 0 };
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + clock.elapsed);
+    engine.process.run.mockImplementation(async (args: string[]) => args[2].includes("__CONFIG__")
+      ? { stdout: "\n__CONFIG__\n{}", exitCode: 0 }
+      : { stdout: "", ...start() });
+    engine.http.fetch.mockReset().mockRejectedValue(refused.error);
+    return { engine, fire, clock };
+  }
+
+  it("backs off after a failed start, doubling up to a minute, and from the start once one works", async () => {
+    const exits = [1, 1, 0, 1];
+    const { engine, fire, clock } = await refusingDaemon(() => ({ stderr: "port 3737 in use\n", exitCode: exits.shift() ?? 1 }));
+    const startsAt = async (seconds: number) => {
+      clock.elapsed = seconds * 1_000;
+      const before = daemonStarts(engine);
+      await fire();
+      return daemonStarts(engine) - before;
+    };
+    expect(await startsAt(0)).toBe(1); // fails: 15 s
+    expect(await startsAt(14)).toBe(0);
+    expect(await startsAt(15)).toBe(1); // fails again: 30 s
+    expect(await startsAt(44)).toBe(0);
+    expect(await startsAt(45)).toBe(1); // works: the usual minute
+    expect(await startsAt(104)).toBe(0);
+    expect(await startsAt(105)).toBe(1); // fails: back to 15 s
+    expect(await startsAt(120)).toBe(1);
+    expect(engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("daemon start failed (exit 1)"));
+  });
+
+  it("keeps a daemon that never comes up to one start per backoff step, not one per event", async () => {
+    const { engine, fire, clock } = await refusingDaemon(() => {
+      clock.elapsed += 12_000; // each start waits 12 s before it gives up
+      return { stderr: "daemon exited during boot\n", exitCode: 1 };
+    });
+    // Ten minutes of tool calls, one every five seconds.
+    while (clock.elapsed < 600_000) {
+      await fire();
+      clock.elapsed += 5_000;
+    }
+    const failures = engine.ui.log.mock.calls.filter(([line]) => String(line).includes("daemon start failed")).length;
+    // 15 s, 30 s, then one a minute: at most 12. Starting on every call would be 35.
+    expect(daemonStarts(engine)).toBeLessThanOrEqual(12);
+    expect(failures).toBe(daemonStarts(engine));
   });
 });

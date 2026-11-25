@@ -19,7 +19,7 @@ async function setup(enabled: boolean | null = true) {
   const engine = {
     env: { get: vi.fn(async () => undefined) }, session: { id: vi.fn(async () => "session-a"), cwd: vi.fn(async () => "/proj"), model: vi.fn(async () => "session-model") },
     model: { fork: vi.fn(async () => ({ isAnswered: true, text: JSON.stringify(workingHeader()), usage })), complete: vi.fn(async () => ({ isAnswered: true, text: JSON.stringify(workingHeader()), usage })) },
-    process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
+    process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}", exitCode: 0 })) },
     fs: { write: vi.fn(async () => undefined) }, clock: { after: vi.fn((ms: number, callback: () => void) => { const timer = setTimeout(callback, ms); return { cancel: () => clearTimeout(timer) }; }), sleep: vi.fn(() => new Promise(() => {})) }, ui: { log: vi.fn() },
     http: { fetch: vi.fn(async (url: string, init?: any) => {
       const route = new URL(url).pathname, body = init?.body ? JSON.parse(init.body) : {};
@@ -395,7 +395,7 @@ describe("opt-in compaction shadow hook", () => {
       harness.engine.process.run.mockReturnValue(late.promise);
       const result = nativeResult(), next = vi.fn(async () => result), pending = harness.fire("session.compact", compact(), next);
       await vi.advanceTimersByTimeAsync(2000); expect(await pending).toBe(result); expect(next).toHaveBeenCalledTimes(1);
-      late.resolve({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 }); await vi.advanceTimersByTimeAsync(0);
+      late.resolve({ stdout: "secret\n__CONFIG__\n{}", exitCode: 0 }); await vi.advanceTimersByTimeAsync(0);
       expect(harness.engine.http.fetch).not.toHaveBeenCalled(); expect(harness.engine.model.fork).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
@@ -441,7 +441,7 @@ describe("opt-in compaction shadow hook", () => {
   });
   it("keeps ordinary summaries on their configured session provider after unreported shadow fork usage", async () => {
     const harness = await setup(); await harness.append(); fallbackRequest.mockClear();
-    harness.engine.process.run.mockResolvedValue({ stdout: 'secret\n__CONFIG__\n{"llm":{"provider":"session","fallbackProvider":"anthropic"}}\n__TMPDIR__/tmp', exitCode: 0 });
+    harness.engine.process.run.mockResolvedValue({ stdout: 'secret\n__CONFIG__\n{"llm":{"provider":"session","fallbackProvider":"anthropic"}}', exitCode: 0 });
     harness.engine.model.fork.mockRejectedValue(new Error("unreported shadow failure"));
     const { SummarizeJobStore } = await import("../../src/daemon/summarize-jobs.js");
     const { createSummarizer } = await import("../../src/daemon/summarizer.js");

@@ -174,7 +174,7 @@ describe("agent worker transports", () => {
       const engine = {
         env: { get: async (name: string) => name === "LCM_SUMMARIZE_WORKER" ? "1" : undefined },
         session: { id: async () => "old", cwd: async () => f.cwd },
-        process: { run: async () => ({ stdout: "fake-token\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 }) },
+        process: { run: async () => ({ stdout: "fake-token\n__CONFIG__\n{}", exitCode: 0 }) },
         fs: { write: vi.fn(async () => {}) }, ui: { log: vi.fn() },
         clock: { after: vi.fn((_ms, callback) => callback()), sleep: () => new Promise<void>(() => {}) },
         http: { fetch: async (url: string, init: any) => {

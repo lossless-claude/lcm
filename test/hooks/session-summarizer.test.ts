@@ -15,7 +15,7 @@ async function start(options: Record<string, number> = {}, jobs: unknown[] = [le
   const engine = {
     env: { get: vi.fn(async (name: string) => env[name]) },
     session: { id: vi.fn(async () => sessionId), cwd: vi.fn(async () => "/proj") },
-    process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 })) },
+    process: { run: vi.fn(async () => ({ stdout: "secret\n__CONFIG__\n{}", exitCode: 0 })) },
     fs: { write: vi.fn(async () => undefined) },
     model: {
       complete: vi.fn(async (): Promise<unknown> => "  summary  "),
