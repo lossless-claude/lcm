@@ -251,16 +251,27 @@ async function writeClaim($: EngineInterface, sessionId: string, ended?: string)
 /** Sessions whose claim could not be written, so the failure is logged once, not per event. */
 const unclaimedSessions = new Set<string>();
 
+/**
+ * Whether the daemon's last answer to this module refused its token, or never came because
+ * nothing listened even after a start: a token or port the shell read differently from
+ * Node, or one cached from before the daemon wrote it. The module then delivers nothing,
+ * so the claim is withdrawn and the command hooks, which resolve both as the daemon does,
+ * record instead. One flag for the process, as there is one daemon for all its sessions.
+ */
+let daemonUnusable = false;
+
 async function claimSession($: EngineInterface, sessionId: string, hook: string): Promise<void> {
-  let claimed = true;
-  await writeClaim($, sessionId).catch((error: unknown) => {
-    claimed = false;
+  const withdrawn = daemonUnusable;
+  let written = true;
+  await writeClaim($, sessionId, withdrawn ? "daemon-unusable" : undefined).catch((error: unknown) => {
+    written = false;
     if (unclaimedSessions.has(sessionId)) return;
     unclaimedSessions.add(sessionId);
     $.ui.log(`[lcm] could not claim the session, command hooks stay active: ${String(error)}`);
   });
-  noteHook(sessionId, hook, "claim", "execution", claimed ? "completed" : "failed",
-    claimed ? "" : "write-failed");
+  const [status, reason] = !written ? ["failed", "write-failed"]
+    : withdrawn ? ["skipped", "daemon-unusable"] : ["completed", ""];
+  noteHook(sessionId, hook, "claim", "execution", status, reason);
 }
 
 /**
@@ -274,6 +285,10 @@ function registerSessionClaim(on: On, shadow?: ShadowSessionState): void {
   on("classic.SessionStart", async ($, e, next) => {
     if (["clear", "resume", "fork"].includes(e.source)) shadow?.reset(e.session_id);
     await claimSession($, e.session_id, "classic.SessionStart");
+    // The SessionStart command hook this claim silences sent the catch-up sweep on every
+    // source; session.start covers startup only. A repeat is harmless: the daemon skips
+    // conversations it is already compacting.
+    if (e.source !== "startup") void postDaemon($, "/session-start-compact", { cwd: e.cwd, session_id: e.session_id });
     return next(e);
   });
   on("classic.UserPromptSubmit", async ($, e, next) => {
@@ -308,8 +323,10 @@ function registerSessionEnd(on: On, shadow?: ShadowSessionState): void {
   });
 }
 
-/** Last time this module asked the host to start the daemon; one attempt per cooldown window. */
+/** When this module last started the daemon. A failed start clears it, so only one that worked holds off the next. */
 let lastDaemonStartAt = 0;
+/** The start in flight: every caller that finds the daemon down meanwhile waits on it, then retries. */
+let daemonStart: Promise<boolean> | null = null;
 const DAEMON_START_COOLDOWN_MS = 60_000;
 const DAEMON_START_TIMEOUT_MS = 15_000;
 const HEALTH_PROBE_TIMEOUT_MS = 500;
@@ -330,18 +347,19 @@ let warnedNoLcmBinary = false;
  * between the idle exit and the next SessionStart is lost. `lcm daemon start --detach`
  * spawns the daemon and waits until /health answers.
  */
-async function startDaemon($: EngineInterface): Promise<boolean> {
-  const now = Date.now();
-  if (now - lastDaemonStartAt < DAEMON_START_COOLDOWN_MS) return false;
-  lastDaemonStartAt = now;
+function startDaemon($: EngineInterface): Promise<boolean> {
+  daemonStart ??= launchDaemon($).finally(() => { daemonStart = null; });
+  return daemonStart;
+}
+async function launchDaemon($: EngineInterface): Promise<boolean> {
+  if (Date.now() - lastDaemonStartAt < DAEMON_START_COOLDOWN_MS) return false;
+  lastDaemonStartAt = Date.now();
   const run = await $.process.run(
     ["sh", "-c", 'command -v lcm >/dev/null 2>&1 || exit 127; exec lcm daemon start --detach --automatic'],
     { timeoutMs: DAEMON_START_TIMEOUT_MS },
   ).catch(() => null);
-  if (run?.exitCode === EXIT_DAEMON_HELD) {
-    if (lastDaemonStartAt === now) lastDaemonStartAt = 0;
-    return false;
-  }
+  if (run?.exitCode !== 0) lastDaemonStartAt = 0;
+  if (run?.exitCode === EXIT_DAEMON_HELD) return false;
   return reportDaemonLaunch($, run);
 }
 function reportDaemonLaunch($: EngineInterface, run: Awaited<ReturnType<EngineInterface["process"]["run"]>> | null): boolean {
@@ -449,12 +467,16 @@ async function postOnce($: EngineInterface, route: string, body: unknown): Promi
  * route or cannot be reached. Only a refused connection starts the daemon and retries once.
  */
 async function postDaemonOutcome($: EngineInterface, route: string, body: unknown): Promise<PostOutcome> {
-  const first = await postOnce($, route, body);
-  if (!first.connectionFailed) return first;
-  if (!(await startDaemon($))) return first;
-  const second = await postOnce($, route, body);
-  if (second.connectionFailed) $.ui.log(`[lcm] ${route}: daemon still unreachable after start`);
-  return second;
+  let outcome = await postOnce($, route, body);
+  if (outcome.connectionFailed && await startDaemon($)) {
+    outcome = await postOnce($, route, body);
+    if (outcome.connectionFailed) $.ui.log(`[lcm] ${route}: daemon still unreachable after start`);
+  }
+  // A busy listener or a missing route leaves the flag alone: the command hooks would
+  // meet the same daemon.
+  if (outcome.body) daemonUnusable = false;
+  else if (outcome.connectionFailed || outcome.httpStatus === 401) daemonUnusable = true;
+  return outcome;
 }
 
 async function postDaemon($: EngineInterface, route: string, body: unknown): Promise<Record<string, unknown> | null> {

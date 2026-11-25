@@ -104,6 +104,36 @@ describe("function-hooks module: session claim", () => {
     await expect(fire("session.end", end, next)).resolves.toEqual({ sessionId: end.sessionId });
     expect(next).toHaveBeenCalledWith(end);
   });
+
+  // A token read before the daemon first wrote one, or a home or port the shell read
+  // differently from Node: the module delivers nothing, so it must not silence the
+  // command hooks, which resolve both the way the daemon does.
+  it.each([
+    ["refuses the module's token", async () => ({ ok: false, status: 401, text: '{"error":"unauthorized"}' })],
+    ["cannot be reached", async () => { throw { code: "ECONNREFUSED", message: "fetch failed" }; }],
+  ])("hands events back to the command hooks while the daemon %s, and claims again once it accepts", async (_label, failing) => {
+    const { engine, fire } = await load();
+    engine.clock.sleep.mockImplementation(() => new Promise<undefined>(() => {}));
+    const id = sid("unusable-daemon");
+    const ownedWhenCommandHooksRun = async () => {
+      let owned: boolean | undefined;
+      await fire("classic.PostToolUse", classic("PostToolUse", id), vi.fn(async (input: unknown) => {
+        owned = functionHooksOwnSession(id);
+        return input;
+      }));
+      return owned;
+    };
+    const toolCall = () => fire("tool.call", { tool: "Read", tool_use_id: "t1", file_path: "/proj/a" },
+      vi.fn(async () => ({ result: "ok" })));
+
+    expect(await ownedWhenCommandHooksRun()).toBe(true);
+    engine.http.fetch.mockImplementation(failing);
+    await toolCall();
+    expect(await ownedWhenCommandHooksRun()).toBe(false);
+    engine.http.fetch.mockImplementation(async () => ({ ok: true, status: 200, text: '{"recorded":1}' }));
+    await toolCall();
+    expect(await ownedWhenCommandHooksRun()).toBe(true);
+  });
 });
 
 // The command hooks name the claim from Node's os.tmpdir(). A shell's TMPDIR is not that

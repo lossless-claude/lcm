@@ -240,4 +240,42 @@ describe("function-hook daemon transport failures", () => {
     const polls = [{ status: 401 }, { error: new Error("fetch failed") }];
     expect(await startSession({ health: { status: 200 }, polls, hostEnvMs: HOST_REQUEST_CAP_MS })).toBe(1);
   });
+
+  const daemonStarts = (engine: Awaited<ReturnType<typeof harness>>["engine"]) =>
+    engine.process.run.mock.calls.filter(([args]) => args[2].includes("lcm daemon start")).length;
+
+  it("lets a tool call that arrives while the daemon starts wait for that start and retry", async () => {
+    const { engine, fire } = await harness(new Error("unused"));
+    let finishStart!: () => void;
+    const starting = new Promise<void>((resolve) => { finishStart = resolve; });
+    let listening = false;
+    engine.process.run.mockImplementation(async (args: string[]) => {
+      if (args[2].includes("__CONFIG__")) return { stdout: "\n__CONFIG__\n{}", exitCode: 0 };
+      await starting;
+      listening = true;
+      return { stdout: "", stderr: "", exitCode: 0 };
+    });
+    engine.http.fetch.mockReset().mockImplementation(async () => {
+      if (!listening) throw refused.error;
+      return { ok: true, status: 200, text: "{}" };
+    });
+    const calls = [fire(), fire()];
+    await vi.waitFor(() => expect(engine.http.fetch).toHaveBeenCalledTimes(2));
+    finishStart();
+    await Promise.all(calls);
+    expect(daemonStarts(engine)).toBe(1);
+    expect(engine.http.fetch).toHaveBeenCalledTimes(4); // both calls retried after the one start
+  });
+
+  it("tries the start again on the next call after a start fails", async () => {
+    const { engine, fire } = await harness(new Error("unused"));
+    engine.process.run.mockImplementation(async (args: string[]) => args[2].includes("__CONFIG__")
+      ? { stdout: "\n__CONFIG__\n{}", exitCode: 0 }
+      : { stdout: "", stderr: "port 3737 in use\n", exitCode: 1 });
+    engine.http.fetch.mockReset().mockRejectedValue(refused.error);
+    await fire();
+    await fire();
+    expect(daemonStarts(engine)).toBe(2);
+    expect(engine.ui.log).toHaveBeenCalledWith(expect.stringContaining("daemon start failed (exit 1)"));
+  });
 });
