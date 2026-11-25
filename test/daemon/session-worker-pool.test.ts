@@ -31,7 +31,7 @@ it("round-trips K concurrent pool jobs through the provider, routes and K Claude
       const engine = {
         env: { get: async (name: string) => name === "LCM_SUMMARIZE_WORKER" ? "1" : undefined },
         session: { id: async () => id, cwd: async () => directory },
-        process: { run: async () => ({ stdout: "fake-token\n__CONFIG__\n{}\n__TMPDIR__/tmp", exitCode: 0 }) },
+        process: { run: async () => ({ stdout: "fake-token\n__CONFIG__\n{}", exitCode: 0 }) },
         fs: { write: vi.fn(async () => undefined) },
         ui: { log: vi.fn() },
         clock: { after: vi.fn(), sleep: () => new Promise<void>(() => {}) },
