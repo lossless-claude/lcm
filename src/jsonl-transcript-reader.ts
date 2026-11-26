@@ -125,7 +125,10 @@ async function readWindow(handle: FileHandle, position: number, length: number, 
   return bytes;
 }
 
-async function fingerprintPrefix<M, R extends JsonlTranscriptRecord<M>>(handle: FileHandle, offset: number, format: JsonlTranscriptFormat<M, R>): Promise<string> {
+/** What identifies a format in its prefix fingerprint; checking a cursor needs no decoder. */
+export type JsonlFingerprintFormat = Pick<JsonlTranscriptFormat<unknown>, "label" | "fingerprintVersion">;
+
+async function fingerprintPrefix(handle: FileHandle, offset: number, format: JsonlFingerprintFormat): Promise<string> {
   const firstLength = Math.min(offset, FINGERPRINT_WINDOW_BYTES);
   const remaining = offset - firstLength;
   const lastLength = Math.min(remaining, FINGERPRINT_WINDOW_BYTES);
@@ -142,13 +145,13 @@ async function fingerprintPrefix<M, R extends JsonlTranscriptRecord<M>>(handle: 
     .digest("hex");
 }
 
-async function canResume<M, R extends JsonlTranscriptRecord<M>>(
+async function canResume(
   handle: FileHandle,
   cursor: JsonlTranscriptCursor | undefined,
   size: number,
   device: string,
   inode: string,
-  format: JsonlTranscriptFormat<M, R>,
+  format: JsonlFingerprintFormat,
 ): Promise<boolean> {
   if (!cursor) return false;
   if (!isNonNegativeInteger(cursor.offset) || !isNonNegativeInteger(cursor.messageCount)) return false;
@@ -167,6 +170,28 @@ async function canResume<M, R extends JsonlTranscriptRecord<M>>(
   }
 
   return await fingerprintPrefix(handle, cursor.offset, format) === cursor.fingerprint;
+}
+
+/**
+ * True when a read from `cursor` would resume at the transcript's end and so read no record:
+ * the same file, nothing past the cursor, and a consumed prefix that passes the resume check
+ * {@link readJsonlTranscriptDelta} applies. Throws when the file cannot be opened or stat'd.
+ */
+export async function jsonlTranscriptCaughtUp(
+  transcriptPath: string, cursor: JsonlTranscriptCursor, format: JsonlFingerprintFormat,
+): Promise<boolean> {
+  const handle = await open(transcriptPath, "r");
+  try {
+    const stats = await handle.stat({ bigint: true });
+    // Compared as strings: NTFS file ids exceed 2^53, where distinct numbers collapse.
+    const device = stats.dev.toString();
+    const inode = stats.ino.toString();
+    if (device !== cursor.device || inode !== cursor.inode) return false;
+    if (stats.size > BigInt(Number.MAX_SAFE_INTEGER) || cursor.offset !== Number(stats.size)) return false;
+    return await canResume(handle, cursor, Number(stats.size), device, inode, format);
+  } finally {
+    await handle.close();
+  }
 }
 
 function decodeRecord<M, R extends JsonlTranscriptRecord<M>>(format: JsonlTranscriptFormat<M, R>, parts: Buffer[], length: number, byteOffset: number): string {

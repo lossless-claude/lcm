@@ -4,6 +4,7 @@ import { workerExcluded } from "../../worker-session.js";
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import type { DatabaseSync } from "node:sqlite";
 import { getLcmConnection, closeLcmConnection } from "../../db/connection.js";
 import type { DaemonConfig } from "../config.js";
@@ -30,7 +31,8 @@ import { applyCutRowRepair, planCutRowRepair, type CutRepairClient } from "../..
 import { SessionCapture, STRUCTURED_INGEST_SHAPE, isSessionComplete, type CaptureInput, type CaptureResult, type TranscriptCaptureResult } from "../../capture.js";
 import type { DiscoveredSubagentTranscript } from "../../subagent-attribution.js";
 import {
-  forgetSubagentGuard, forgetSubagentGuardSession, rememberSubagentGuard, skipUnchangedSubagentGuard, subagentGuardFingerprint, terminalTranscriptGuard,
+  forgetSubagentGuard, forgetSubagentGuardSession, recordedSubagentGuardPaths, rememberSubagentGuard, skipUnchangedSubagentGuard,
+  subagentGuardFingerprint, terminalTranscriptGuard,
 } from "../subagent-guard-failures.js";
 
 type ParsedMessage = CaptureInput["messages"][number];
@@ -87,24 +89,72 @@ function requestAttribution(input: IngestInput): SubagentAttributionInput | unde
 /** A subagent transcript that could not be captured; the parent ingest still succeeds. */
 type SubagentFailure = { sessionId: string; err: unknown };
 
+/** What one pass did with each discovered subagent transcript, for the `ingest.timing` record. */
+type SubagentCounts = {
+  subagents_total: number; subagents_skipped: number; subagents_guard_skipped: number;
+  subagents_captured: number; subagents_failed: number; subagents_precheck_errors: number;
+};
+
+type SubagentIngest = { failures: SubagentFailure[]; counts: SubagentCounts };
+
+/** Milliseconds one `/ingest` spent in each phase, for its `ingest.timing` record. */
+type IngestTiming = { queue_ms: number; main_ms: number; discover_ms: number; subagent_ms: number };
+
+function subagentCounts(total: number): SubagentCounts {
+  return {
+    subagents_total: total, subagents_skipped: 0, subagents_guard_skipped: 0,
+    subagents_captured: 0, subagents_failed: 0, subagents_precheck_errors: 0,
+  };
+}
+
+/**
+ * The caught-up check opens each discovered path as it is, where a capture first resolves and
+ * vets it. Discovery follows no link below a session's `subagents` folder, so whether one
+ * subagent resolves to itself settles it for the folders above all of them.
+ */
+function locatedInPlace(cwd: string, sub: DiscoveredSubagentTranscript | undefined): boolean {
+  if (!sub) return false;
+  try {
+    return transcriptSource(undefined).locate({ sessionId: sub.sessionId, cwd, transcriptPath: sub.path }) === sub.path;
+  } catch {
+    return false; // refused: each capture then reports it as before
+  }
+}
+
 async function ingestAllSubagents(
   db: DatabaseSync, cwd: string, pid: string, scrubber: ScrubEngine, subagents: DiscoveredSubagentTranscript[],
   parentSessionId: string, paths: LcmPaths,
-): Promise<SubagentFailure[]> {
+): Promise<SubagentIngest> {
   runLcmMigrations(db);
   const capture = new SessionCapture(db, pid, scrubber, paths);
   const failures: SubagentFailure[] = [];
+  const counts = subagentCounts(subagents.length);
+  // Without a worker row no capture is refused or excluded, so a capture that reads nothing
+  // writes nothing. A recorded failure is cleared only by capturing again.
+  const precheck = !new WorkerStore(db).hasRows() && locatedInPlace(cwd, subagents[0]);
+  const recorded = precheck ? recordedSubagentGuardPaths(cwd, paths) : new Set<string>();
   for (const sub of subagents) {
     const fingerprint = subagentGuardFingerprint(sub.path);
-    if (skipUnchangedSubagentGuard(cwd, paths, sub.path, fingerprint)) continue;
+    if (skipUnchangedSubagentGuard(cwd, paths, sub.path, fingerprint)) {
+      counts.subagents_guard_skipped++;
+      continue;
+    }
+    const input = { sessionId: sub.sessionId, cwd, transcriptPath: sub.path, attribution: sub.attribution };
+    if (precheck && !recorded.has(sub.path)) {
+      // A check that fails only costs the capture it would have saved.
+      const caughtUp = await capture.transcriptCaughtUp(input).catch(() => {
+        counts.subagents_precheck_errors++;
+        return false;
+      });
+      if (caughtUp) {
+        counts.subagents_skipped++;
+        continue;
+      }
+    }
     forgetSubagentGuard(cwd, paths, sub.path);
     try {
-      await capture.captureTranscript({
-        sessionId: sub.sessionId,
-        cwd,
-        transcriptPath: sub.path,
-        attribution: sub.attribution,
-      });
+      await capture.captureTranscript(input);
+      counts.subagents_captured++;
     } catch (err) {
       if (err instanceof TranscriptSourceError) {
         rememberSubagentGuard(cwd, paths, sub.path, fingerprint, sub.sessionId, parentSessionId, err.message);
@@ -112,7 +162,8 @@ async function ingestAllSubagents(
       failures.push({ sessionId: sub.sessionId, err });
     }
   }
-  return failures;
+  counts.subagents_failed = failures.length;
+  return { failures, counts };
 }
 
 /**
@@ -123,18 +174,25 @@ async function ingestAllSubagents(
  */
 async function ingestSubagentTranscripts(
   cwd: string, dbPath: string, pid: string, subagents: DiscoveredSubagentTranscript[], scrubber: ScrubEngine, paths: LcmPaths,
-  parentSessionId: string,
-): Promise<SubagentFailure[]> {
-  if (subagents.length === 0) return [];
+  parentSessionId: string, timing: IngestTiming,
+): Promise<SubagentIngest> {
+  if (subagents.length === 0) return { failures: [], counts: subagentCounts(0) };
 
+  const queued = performance.now();
   return enqueue(pid, async () => {
+    // Only the two waits: the project bookkeeping between them is work, not contention.
+    timing.queue_ms += performance.now() - queued;
     openProject(cwd, paths);
+    const leaseRequested = performance.now();
     return withProjectMutation(pid, async () => {
+      const started = performance.now();
+      timing.queue_ms += started - leaseRequested;
       const db = getLcmConnection(dbPath);
       try {
         return await ingestAllSubagents(db, cwd, pid, scrubber, subagents, parentSessionId, paths);
       } finally {
         closeLcmConnection(dbPath);
+        timing.subagent_ms = performance.now() - started;
       }
     });
   });
@@ -274,6 +332,7 @@ export function createIngestHandler(
   beginBackgroundTask: BeginBackgroundTask = () => () => {},
 ): RouteHandler {
   return async (_req, res, body) => {
+    const handlerStarted = performance.now();
     const input = JSON.parse(body || "{}") as IngestInput;
     const { session_id } = input;
 
@@ -327,6 +386,8 @@ export function createIngestHandler(
       return;
     }
     const pid = projectId(cwd);
+    const timing: IngestTiming = { queue_ms: 0, main_ms: 0, discover_ms: 0, subagent_ms: 0 };
+    let counts = subagentCounts(0);
     try {
       const scrubber = await ScrubEngine.forProject(
         config.security?.sensitivePatterns ?? [],
@@ -341,9 +402,14 @@ export function createIngestHandler(
         return;
       }
       let captured: TranscriptCaptureResult | undefined;
+      const queued = performance.now();
       const result = await enqueue(pid, async () => {
+        timing.queue_ms += performance.now() - queued;
         openProject(cwd, paths);
+        const leaseRequested = performance.now();
         return withProjectMutation(pid, async () => {
+        const workStarted = performance.now();
+        timing.queue_ms += workStarted - leaseRequested;
         const db = getLcmConnection(dbPath);
         try {
           runLcmMigrations(db);
@@ -408,6 +474,7 @@ export function createIngestHandler(
           };
         } finally {
           closeLcmConnection(dbPath);
+          timing.main_ms = performance.now() - workStarted;
         }
         });
       });
@@ -418,14 +485,18 @@ export function createIngestHandler(
       // an error response for the session that was actually asked for; it is
       // reported as `incomplete` instead, so a caller can tell work is still pending.
       let incomplete = false;
+      const discoverStarted = performance.now();
       const subagents = source.discoverSubagents?.(cwd, session_id) ?? [];
+      timing.discover_ms = performance.now() - discoverStarted;
+      counts = subagentCounts(subagents.length);
       if (subagents.length > 0) {
         try {
-          const failures = await ingestSubagentTranscripts(cwd, dbPath, pid, subagents, scrubber, paths, session_id);
-          for (const failure of failures) {
+          const subagentIngest = await ingestSubagentTranscripts(cwd, dbPath, pid, subagents, scrubber, paths, session_id, timing);
+          counts = subagentIngest.counts;
+          for (const failure of subagentIngest.failures) {
             log.write("warn", "ingest.subagent_failed", { cwd, session_id: failure.sessionId, parent_session_id: session_id, err: failure.err });
           }
-          if (failures.length > 0) incomplete = true;
+          if (subagentIngest.failures.length > 0) incomplete = true;
         } catch (err) {
           log.write("warn", "ingest.subagents_failed", { cwd, session_id, err });
           incomplete = true;
@@ -456,6 +527,16 @@ export function createIngestHandler(
       const status = err instanceof TranscriptSourceError ? 400 : 500;
       log.write(status === 500 ? "error" : "warn", "ingest.failed", { cwd: input.cwd, session_id: input.session_id, err });
       sendJson(res, status, { error: err instanceof Error ? err.message : "ingest failed" });
+    } finally {
+      // Numbers and ids only. A rebuild or cut repair logs its own outcome and is not timed here.
+      if (input.rebuild !== true) {
+        log.write("info", "ingest.timing", {
+          cwd, session_id, client: source.client,
+          queue_ms: Math.round(timing.queue_ms), main_ms: Math.round(timing.main_ms),
+          discover_ms: Math.round(timing.discover_ms), subagent_ms: Math.round(timing.subagent_ms),
+          total_ms: Math.round(performance.now() - handlerStarted), ...counts,
+        });
+      }
     }
   };
 }

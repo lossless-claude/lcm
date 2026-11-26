@@ -83,6 +83,11 @@ function writeRecords(cwd: string, paths: LcmPaths, current: Record<string, Fail
   }
 }
 
+/** Every path with a failure held in memory or in the project's sidecar, read once for a pass over many transcripts. */
+export function recordedSubagentGuardPaths(cwd: string, paths: LcmPaths): Set<string> {
+  return new Set([...failed.keys(), ...Object.keys(records(cwd, paths))]);
+}
+
 export function skipUnchangedSubagentGuard(cwd: string, paths: LcmPaths, path: string, fingerprint: string | undefined): boolean {
   const prior = failed.get(path);
   return fingerprint !== undefined && prior?.fingerprint === fingerprint && prior.db === dbIdentity(cwd, paths);

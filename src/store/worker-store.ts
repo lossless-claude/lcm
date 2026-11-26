@@ -20,6 +20,12 @@ export type WorkerEnrollment = {
 export class WorkerStore {
   constructor(private db: DatabaseSync) {}
 
+  /** Whether any session is enrolled or excluded; with none, no capture can be refused or excluded. */
+  hasRows(): boolean {
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'summarize_workers'").get()) return false;
+    return Boolean(this.db.prepare("SELECT 1 FROM summarize_workers LIMIT 1").get());
+  }
+
   list(): WorkerEnrollment[] {
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'summarize_workers'").get()) return [];
     return this.db.prepare(`SELECT session_id, cwd, client, owner, state, last_activity, ${this.reasonColumn()}
