@@ -28,6 +28,7 @@ import { recordTranscriptToolCalls } from "./store/tool-call-store.js";
 import type { TranscriptToolCall } from "./tool-calls.js";
 import { recordSessionWebUrls } from "./store/session-url-store.js";
 import { readSubagentAttribution } from "./subagent-attribution.js";
+import { claudeTranscriptCaughtUp, type ClaudeTranscriptCursor } from "./claude-transcript-reader.js";
 import { CLAUDE_PARSER_SHAPE, parseTranscript, transcriptEventTime, type MessagePart, type ParsedMessage, type SessionUrlDeclaration } from "./transcript.js";
 import { clearConversationForRebuild, planSessionRebuild, type SessionRebuildPlan } from "./claude-rebuild.js";
 import {
@@ -270,6 +271,31 @@ export class SessionCapture {
         if (dbPath) db.close();
       }
     } };
+  }
+
+  /**
+   * True only when {@link captureTranscript} would read no record of this Claude transcript and
+   * change nothing: its stored cursor is one the adapter's `read` would resume from (the same
+   * conditions, in the same terms), it sits at the file's end, and no attribution waits to be
+   * backfilled. It does not consult the worker gate: a caller may rely on it only while no
+   * worker session is enrolled or excluded. An error means the caller must capture.
+   */
+  async transcriptCaughtUp(input: TranscriptCaptureInput): Promise<boolean> {
+    const source = transcriptSource(input.client);
+    if (input.sessionId === TIMELINE_SESSION_ID || source.client !== "claude" || !input.transcriptPath) return false;
+    const stored = await this.stored(input.sessionId);
+    if (!stored) return false;
+    // The caller's path, not the located one: the cursor is trusted only for the exact string it was saved under.
+    const transcript = this.storedTranscript(source, input.sessionId, stored, input.transcriptPath);
+    const cursor = transcript.checkpoint as ClaudeTranscriptCursor | undefined;
+    if (!cursor?.fingerprint || cursor.redactionKey !== this.scrubber.rulesKey || cursor.messageCount !== stored.storedCount) return false;
+    // An enrollment's overlap is still to be compared; that read rewrites the cursor.
+    if (cursor.validatedCount !== undefined && cursor.validatedCount < stored.storedCount) return false;
+    if (!await transcript.parserShapeMatches()) return false;
+    const conversation = await this.conversationStore.getConversation(stored.conversationId);
+    const attribution = input.attribution ?? attributionFromTranscriptPath(input.transcriptPath);
+    if (!conversation || this.conversationStore.backfillsAttribution(conversation, attribution)) return false;
+    return claudeTranscriptCaughtUp(input.transcriptPath, cursor);
   }
 
   private storedTranscript(source: TranscriptSource, sessionId: string, stored: StoredSession, transcriptPath: string): StoredTranscript {

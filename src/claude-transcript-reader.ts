@@ -1,5 +1,6 @@
 import {
-  readJsonlTranscriptDelta, type JsonlTranscriptCursor, type JsonlTranscriptDelta, type ReadJsonlTranscriptDeltaOptions,
+  jsonlTranscriptCaughtUp, readJsonlTranscriptDelta, type JsonlFingerprintFormat, type JsonlTranscriptCursor, type JsonlTranscriptDelta,
+  type ReadJsonlTranscriptDeltaOptions,
 } from "./jsonl-transcript-reader.js";
 import { CLAUDE_PARSER_SHAPE, parseClaudeTranscriptRecord, type SessionUrlDeclaration } from "./transcript.js";
 
@@ -22,13 +23,23 @@ export type ClaudeTranscriptDelta = JsonlTranscriptDelta<unknown, ReturnType<typ
   sessionUrlDeclarations: SessionUrlDeclaration[];
 };
 
+/** One identity for the reader and the caught-up check, so both fingerprint a prefix alike. */
+const CLAUDE_FINGERPRINT: JsonlFingerprintFormat = {
+  label: "Claude",
+  fingerprintVersion: `claude-transcript-prefix-v1:${CLAUDE_PARSER_SHAPE}`,
+};
+
+/** Whether a read from this cursor would find no new record (see `jsonlTranscriptCaughtUp`). */
+export function claudeTranscriptCaughtUp(path: string, cursor: JsonlTranscriptCursor): Promise<boolean> {
+  return jsonlTranscriptCaughtUp(path, cursor, CLAUDE_FINGERPRINT);
+}
+
 /** Claude's parser over the common byte reader, including its best-effort malformed-line filtering. */
 export async function readClaudeTranscriptDelta(path: string, options: ReadJsonlTranscriptDeltaOptions): Promise<ClaudeTranscriptDelta> {
   const models = new Map<string, string>();
   const sessionUrlDeclarations: SessionUrlDeclaration[] = [];
   const delta = await readJsonlTranscriptDelta(path, {
-    label: "Claude",
-    fingerprintVersion: `claude-transcript-prefix-v1:${CLAUDE_PARSER_SHAPE}`,
+    ...CLAUDE_FINGERPRINT,
     hasSessionMeta: false,
     decodeUtf8: (bytes) => Buffer.from(bytes).toString("utf8"),
     isCompleteTrailingRecord: (record) => {

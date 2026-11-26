@@ -269,7 +269,16 @@ export async function createDaemon(config: DaemonConfig, options?: DaemonOptions
     let identity: { cwd?: string; session_id?: string } = {};
     const current: InFlightRequest = { route: key, started };
     inFlight.add(current);
-    res.on("close", () => { current.ended = Date.now(); });
+    res.on("close", () => {
+      current.ended = Date.now();
+      // A client gone before the answer leaves no `request` record. Claude hooks wait for an ingest,
+      // other hooks drop their socket by design. OMP posts ingests fire-and-forget too, so this is
+      // `info`, not a fault. A status-free event of its own keeps deploy checks that read `request`
+      // with status 200 as a landed ingest from counting it.
+      if (key === "POST /ingest" && !res.writableFinished) {
+        log.write("info", "request.aborted", { route: key, ms: Date.now() - started, ...identity });
+      }
+    });
     // Registered before the 404 and 401 answers: a stale token on a fire-and-forget request fails only here.
     res.on("finish", () => log.write(requestLevel(key, res.statusCode), "request",
       { route: key, status: res.statusCode, ms: Date.now() - started, ...identity }));

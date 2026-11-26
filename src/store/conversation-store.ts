@@ -552,6 +552,13 @@ export class ConversationStore {
     return row.compacted === 1 && row.untagged === 0;
   }
 
+  /** Whether {@link getOrCreateConversation} would write `attribution` onto this existing conversation. */
+  backfillsAttribution(
+    existing: ConversationRecord, attribution?: SubagentAttributionInput,
+  ): attribution is SubagentAttributionInput & { parentSessionId: string } {
+    return Boolean(attribution?.parentSessionId) && existing.parentSessionId === null;
+  }
+
   /**
    * Fills a still-null attribution on an already-created row — the row was
    * captured before its `.meta.json` sidecar existed, or before whichever
@@ -560,7 +567,7 @@ export class ConversationStore {
    * correctly attributed.
    */
   private backfillAttribution(existing: ConversationRecord, attribution?: SubagentAttributionInput): ConversationRecord {
-    if (!attribution?.parentSessionId || existing.parentSessionId !== null) {
+    if (!this.backfillsAttribution(existing, attribution)) {
       return existing;
     }
     this.db
