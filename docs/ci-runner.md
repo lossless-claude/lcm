@@ -11,7 +11,9 @@ cancelled, and each run has a 30-minute timeout.
 CI machines are shared, so CI time is not idle time. Each unit test gets 20 s
 (`testTimeout` in `vitest.config.ts`) instead of vitest's 5 s default. Setup-heavy tests
 that take 1–3 s on an idle machine otherwise time out under load, which fails the run
-without a defect in the code.
+without a defect in the code. Hooks (`beforeAll`, `beforeEach` and their `after*`
+counterparts) do the same setup, so both projects give them the same 20 s (`hookTimeout`)
+instead of vitest's 10 s default.
 
 ## Validate plugin manifest
 

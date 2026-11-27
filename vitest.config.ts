@@ -20,7 +20,10 @@ export default defineConfig({
           setupFiles: ["./test/setup-dist.ts", "./test/setup-env.ts"],
           // CI machines are shared: setup-heavy tests that take 1–3 s
           // idle exceed vitest's 5 s default under load. A real hang still fails.
+          // Hooks do the same setup (databases, daemons, fixtures), so they get
+          // the same 20 s instead of vitest's 10 s hook default.
           testTimeout: 20_000,
+          hookTimeout: 20_000,
         },
       },
       {
@@ -34,6 +37,8 @@ export default defineConfig({
           // E2E tests spin up real daemons backed by SQLite — must run
           // sequentially to avoid concurrent write conflicts.
           fileParallelism: false,
+          // Their hooks start those daemons: the unit project's 20 s, for the same reason.
+          hookTimeout: 20_000,
         },
       },
     ],
