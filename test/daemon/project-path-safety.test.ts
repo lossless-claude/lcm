@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { isSafeTranscriptPath } from "../../src/daemon/project.js";
+import { stubUserHome } from "../helpers/user-home.js";
 
 describe("isSafeTranscriptPath", () => {
   let fixture: string;
@@ -16,7 +17,7 @@ describe("isSafeTranscriptPath", () => {
       join(home, ".codex", "sessions"), join(home, ".codex", "archived_sessions")]) {
       mkdirSync(directory, { recursive: true });
     }
-    vi.stubEnv("HOME", home);
+    stubUserHome(home);
   });
 
   afterAll(() => {

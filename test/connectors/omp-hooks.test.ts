@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { installConnector, removeConnector, diagnoseConnector, listConnectors } from "../../src/connectors/installer.js";
 import { OMP_HOOK_MARKER } from "../../src/connectors/omp-hooks.js";
 import { runningFromPluginBundle } from "../../src/hooks/fail-open.js";
+import { stubUserHome } from "../helpers/user-home.js";
 
 vi.mock("../../src/hooks/fail-open.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/hooks/fail-open.js")>()),
@@ -98,17 +99,13 @@ describe("OMP connector installation", () => {
 });
 
 describe("OMP connector scope at the home directory", () => {
-  let previousHome: string | undefined;
-
   beforeEach(() => {
-    previousHome = process.env.HOME;
-    process.env.HOME = root;
+    stubUserHome(root);
     process.env.PI_CODING_AGENT_DIR = join(root, "agent");
   });
 
   afterEach(() => {
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
+    vi.unstubAllEnvs();
   });
 
   it("manages a project at the home directory at project scope", () => {

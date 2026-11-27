@@ -10,6 +10,7 @@ import { lcmHome } from "../../src/lcm-home.js";
 import { createLcmPaths } from "../../src/lcm-paths.js";
 import { clearHold, readHold, writeHold } from "../../src/daemon/hold.js";
 import { ensureDaemon } from "../../src/daemon/lifecycle.js";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 const execute = promisify(execFile);
 let dir: string, home: string, root: string, pid: string, server: Server, requests: number;
@@ -18,7 +19,7 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "hold-start-"));
   home = join(dir, "home"); root = join(dir, "storage");
   mkdirSync(home); mkdirSync(root);
-  env = { ...process.env, HOME: home, LCM_HOME: root };
+  env = { ...childEnvWithHome(home), LCM_HOME: root };
   pid = createLcmPaths(lcmHome(env)).pidPath;
   requests = 0;
   server = createServer((_req, res) => { requests++; res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ status: "ok", version: "test" })); });

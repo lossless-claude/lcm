@@ -5,7 +5,9 @@ import { createServer } from "node:net";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { registerDaemonActivity } from "../../src/daemon/lifecycle.js";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 const execute = promisify(execFile);
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -45,10 +47,10 @@ it.each([1, 2])("held stop waits for %i concurrent startup(s) before claiming an
     };
     syncBuiltinESMExports();
   `);
-  const env = { ...process.env, HOME: root, LCM_HOME: root };
+  const env = { ...childEnvWithHome(root), LCM_HOME: root };
   const cli = resolve("dist/bin/lcm.js");
   const starts = Array.from({ length: count }, () => execute(process.execPath,
-    ["--import", preload, cli, "daemon", "start", "--automatic"], { env, timeout: 15000 }));
+    ["--import", pathToFileURL(preload).href, cli, "daemon", "start", "--automatic"], { env, timeout: 15000 }));
   // Attach rejection handlers immediately: cancellation may precede the assertion.
   const outcomes = starts.map((start) => start.then(() => ({ code: 0, stderr: "", signal: null }),
     (error: { code: number | null; stderr: string; signal: string | null }) => error));
@@ -88,7 +90,7 @@ it("held stop fails instead of claiming maintenance readiness when startup never
   writeFileSync(join(root, "config.json"), JSON.stringify({ daemon: { port: 1 } }));
   try {
     const result = await execute(process.execPath, [resolve("dist/bin/lcm.js"), "daemon", "stop", "--hold"], {
-      env: { ...process.env, HOME: root, LCM_HOME: root }, timeout: 10000,
+      env: { ...childEnvWithHome(root), LCM_HOME: root }, timeout: 10000,
     }).then(() => { throw new Error("stop must not succeed"); }, (error) => error);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("still up");

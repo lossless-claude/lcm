@@ -10,6 +10,7 @@ import { recordPostToolEvents } from "../../src/hooks/tool-events.js";
 import { recordUserPromptEvents } from "../../src/hooks/user-prompt.js";
 import { safeLogError, _resetCircuitBreaker } from "../../src/hooks/hook-errors.js";
 import { createLcmPaths, type LcmPaths } from "../../src/lcm-paths.js";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 vi.mock("../../src/db/events-path.js", () => ({
   eventsDbPath: () => join(process.env.LCM_HOME!, "events", "test.db"),
@@ -74,7 +75,7 @@ it("held stop drains a command-hook write already inside SQLite before succeedin
     };
     console.log(recordPostToolEvents(${JSON.stringify(payload)}, paths).recorded);
   `);
-  const env = { ...process.env, HOME: root, LCM_HOME: root };
+  const env = { ...childEnvWithHome(root), LCM_HOME: root };
   const writer = execute(process.execPath, [script], { env, timeout: 15000 });
   const writerDone = writer.then((result) => result, (error) => { throw error; });
   void writerDone.catch(() => {});

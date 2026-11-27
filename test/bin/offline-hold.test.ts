@@ -6,7 +6,9 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { writeHold } from "../../src/daemon/hold.js";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 const execute = promisify(execFile);
 const cli = resolve("dist/bin/lcm.js");
@@ -14,7 +16,7 @@ let root: string, dbPath: string, input: string;
 let env: NodeJS.ProcessEnv;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "lcm-offline-hold-"));
-  env = { ...process.env, HOME: root, LCM_HOME: root };
+  env = { ...childEnvWithHome(root), LCM_HOME: root };
   const id = createHash("sha256").update(realpathSync(root)).digest("hex");
   const project = join(root, "projects", id);
   mkdirSync(project, { recursive: true });
@@ -73,7 +75,7 @@ it("held stop drains an admitted offline import without requiring a daemon", asy
       await delay(10);
     }
   }
-  const importing = execute(process.execPath, ["--import", preload, cli, "import-knowledge", input], { cwd: root, env, timeout: 15000 });
+  const importing = execute(process.execPath, ["--import", pathToFileURL(preload).href, cli, "import-knowledge", input], { cwd: root, env, timeout: 15000 });
   void importing.catch(() => {});
   let stop: ReturnType<typeof execute> | undefined;
   try {

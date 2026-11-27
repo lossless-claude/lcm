@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { createHarness, type HarnessHandle } from "../harness.js";
 // @ts-expect-error — a plain ESM script without declarations; vitest resolves it.
 import { buildBundle } from "../../../scripts/build-bundle.mjs";
+import { childEnvWithHome } from "../../helpers/user-home.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
@@ -85,13 +86,12 @@ function runHook(hook: CommandHook, stdin: string, cwd = pluginRoot, home = fake
   return new Promise((resolve, reject) => {
     const child = spawn(command === "node" ? process.execPath : command, args, {
       cwd,
-      env: {
+      env: childEnvWithHome(home, {
         PATH: dirname(process.execPath),
-        HOME: home,
         LCM_HOME: join(home, ".lossless-claude"),
         npm_config_cache: join(fakeHome, "npm-cache"),
         TMPDIR: tmpdir(),
-      },
+      }),
     });
     let stdout = "";
     let stderr = "";
