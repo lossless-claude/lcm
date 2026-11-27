@@ -1,16 +1,22 @@
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { createServer, request, type ClientRequest, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { createDaemon, type DaemonInstance } from "../../../src/daemon/server.js";
+import { createPromptSearchHandler } from "../../../src/daemon/routes/prompt-search.js";
 import { loadDaemonConfig } from "../../../src/daemon/config.js";
 import { runLcmMigrations } from "../../../src/db/migration.js";
 import { PromotedStore } from "../../../src/db/promoted.js";
 import { ConversationStore } from "../../../src/store/conversation-store.js";
 import { projectDbPath } from "../../../src/daemon/project.js";
 import { lcmHome } from "../../../src/lcm-home.js";
-import { createLcmPaths } from "../../../src/lcm-paths.js";
+import { createLcmPaths, type LcmPaths } from "../../../src/lcm-paths.js";
+import { EventsDb } from "../../../src/hooks/events-db.js";
+import { eventsDbPath } from "../../../src/db/events-path.js";
 
 const paths = createLcmPaths(lcmHome());
 
@@ -228,16 +234,18 @@ describe("POST /prompt-search", () => {
         body: JSON.stringify({ query: "TypeScript", cwd: tempDir, session_id: "sess-recall" }),
       });
 
-      // Verify surfacing was logged
-      const verifyDb = new DatabaseSync(dbPath);
-      const row = verifyDb.prepare(
-        "SELECT memory_id, session_id FROM recall_surfacing WHERE memory_id = ?"
-      ).get(insertedId) as { memory_id: string; session_id: string } | undefined;
-      verifyDb.close();
+      // Surfacing is written once the answer is flushed, which can land just after the client reads it.
+      await vi.waitFor(() => {
+        const verifyDb = new DatabaseSync(dbPath);
+        const row = verifyDb.prepare(
+          "SELECT memory_id, session_id FROM recall_surfacing WHERE memory_id = ?"
+        ).get(insertedId) as { memory_id: string; session_id: string } | undefined;
+        verifyDb.close();
 
-      expect(row).toBeDefined();
-      expect(row?.memory_id).toBe(insertedId);
-      expect(row?.session_id).toBe("sess-recall");
+        expect(row).toBeDefined();
+        expect(row?.memory_id).toBe(insertedId);
+        expect(row?.session_id).toBe("sess-recall");
+      });
     } finally {
       await daemon.stop();
     }
@@ -864,13 +872,15 @@ describe("POST /prompt-search", () => {
         }),
       });
 
-      const verifyDb = new DatabaseSync(dbPath);
-      const row = verifyDb.prepare(
-        "SELECT COUNT(*) as count FROM recall_surfacing WHERE memory_id = ?"
-      ).get(memoryId) as { count: number };
-      verifyDb.close();
+      await vi.waitFor(() => {
+        const verifyDb = new DatabaseSync(dbPath);
+        const row = verifyDb.prepare(
+          "SELECT COUNT(*) as count FROM recall_surfacing WHERE memory_id = ?"
+        ).get(memoryId) as { count: number };
+        verifyDb.close();
 
-      expect(row.count).toBeGreaterThan(0);
+        expect(row.count).toBeGreaterThan(0);
+      });
     } finally {
       await daemon.stop();
     }
@@ -923,6 +933,96 @@ describe("POST /prompt-search", () => {
       expect(disabled.ids.some((id) => id.startsWith("message:") || id.startsWith("summary:"))).toBe(false);
     } finally {
       await daemon.stop();
+    }
+  });
+});
+
+describe("POST /prompt-search surfacing for an answer the client never got", () => {
+  // The prompt both yields a prompt event (intent) and matches the seeded memory.
+  const query = "explain the postgres migration";
+  const sessionId = "sess-gone";
+
+  function seedProject() {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-ps-undelivered-"));
+    tempDirs.push(cwd);
+    const scopedPaths: LcmPaths = createLcmPaths(cwd);
+    const dbPath = projectDbPath(cwd, scopedPaths);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    runLcmMigrations(db);
+    const memoryId = new PromotedStore(db).insert({ content: "The postgres migration must explain its rollback", tags: [], projectId: "p1" });
+    db.close();
+
+    const config = loadDaemonConfig("/nonexistent");
+    config.restoration.promptSearchMinScore = 0;
+    const handler = createPromptSearchHandler(config, scopedPaths);
+    const body = JSON.stringify({ query, cwd, session_id: sessionId, recordEvents: true });
+    return { cwd, scopedPaths, dbPath, memoryId, handler, body };
+  }
+
+  function surfacingCount(dbPath: string, memoryId: string): number {
+    const db = new DatabaseSync(dbPath);
+    const row = db.prepare("SELECT COUNT(*) as count FROM recall_surfacing WHERE memory_id = ?").get(memoryId) as { count: number };
+    db.close();
+    return row.count;
+  }
+
+  function promptEventCount(cwd: string, scopedPaths: LcmPaths): number {
+    const db = new EventsDb(eventsDbPath(cwd, scopedPaths));
+    const rows = db.getUnprocessed().filter((row) => row.session_id === sessionId && row.source_hook === "UserPromptSubmit");
+    db.close();
+    return rows.length;
+  }
+
+  it("logs no surfacing when the connection closes before the answer is flushed", async () => {
+    const { cwd, scopedPaths, dbPath, memoryId, handler, body } = seedProject();
+    // A response the handler can write into whose bytes never leave: the client hangs
+    // up mid-flush, so `close` fires and `finish` never does.
+    const connection = new EventEmitter();
+    let written = "";
+    const res = Object.assign(connection, {
+      writeHead: () => connection,
+      end: (chunk: string) => { written = chunk; },
+    }) as unknown as ServerResponse;
+
+    await handler({} as never, res, body);
+    expect((JSON.parse(written) as { ids: string[] }).ids).toContain(memoryId);
+    connection.emit("close");
+
+    expect(surfacingCount(dbPath, memoryId)).toBe(0);
+    expect(promptEventCount(cwd, scopedPaths)).toBeGreaterThan(0);
+  });
+
+  it("logs no surfacing when the client hung up before the answer was sent", async () => {
+    const { cwd, scopedPaths, dbPath, memoryId, handler, body } = seedProject();
+    let client: ClientRequest | undefined;
+    const server = createServer();
+    // The handler runs only once the server has seen the client go away, so the real
+    // response is already destroyed when the answer is written.
+    const written = new Promise<string>((resolve, reject) => {
+      server.on("request", (req, res: ServerResponse) => {
+        req.resume();
+        res.once("close", () => {
+          const end = vi.spyOn(res, "end");
+          handler(req, res, body).then(() => resolve(String(end.mock.calls[0]?.[0])), reject);
+        });
+        client?.destroy();
+      });
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
+      client = request({ host: "127.0.0.1", port, method: "POST", path: "/prompt-search", agent: false });
+      client.on("error", () => { /* the hang-up is the point of the test */ });
+      client.end();
+
+      expect((JSON.parse(await written) as { ids: string[] }).ids).toContain(memoryId);
+      expect(surfacingCount(dbPath, memoryId)).toBe(0);
+      expect(promptEventCount(cwd, scopedPaths)).toBeGreaterThan(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });
