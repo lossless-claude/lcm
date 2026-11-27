@@ -9,11 +9,12 @@ import { SummaryStore } from "../src/store/summary-store.js";
 const CONTEXT_TOKENS = 50_000;
 
 function makeMinimalStores(): { conversationStore: ConversationStore; summaryStore: SummaryStore } {
+  const contextItems = [{ ordinal: 0, itemType: "message", messageId: 1, summaryId: null, tokenCount: CONTEXT_TOKENS }];
   const summaryStore = {
     getContextTokenCount: vi.fn().mockResolvedValue(CONTEXT_TOKENS),
-    getContextItems: vi.fn().mockResolvedValue([
-      { ordinal: 0, itemType: "message", messageId: 1, summaryId: null, tokenCount: CONTEXT_TOKENS },
-    ]),
+    getContextItems: vi.fn().mockResolvedValue(contextItems),
+    // The publish check reads the chunk's range back unchanged.
+    getContextRange: vi.fn().mockResolvedValue(contextItems),
     insertSummary: vi.fn().mockResolvedValue(undefined),
     linkSummaryToMessages: vi.fn().mockResolvedValue(undefined),
     replaceContextRangeWithSummary: vi.fn().mockResolvedValue(undefined),

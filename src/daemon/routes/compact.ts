@@ -19,7 +19,7 @@ import { SessionCapture, STRUCTURED_INGEST_SHAPE, type CaptureResult, type Trans
 import { EventsDb } from "../../hooks/events-db.js";
 import { withHookWrite } from "../../hooks/write-admission.js";
 import { eventsDbPath } from "../../db/events-path.js";
-import { CompactionEngine, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
+import { CompactionEngine, CompactionSourceChangedError, compactEngineConfig, COMPACT_TOKEN_BUDGET } from "../../compaction.js";
 import { TranscriptSourceError } from "../../transcript-source.js";
 import type { LcmSummarizeFn } from "../../llm/types.js";
 import { acceptSummaryText } from "../../llm/summary-rejection.js";
@@ -695,7 +695,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                     max_output_tokens: maxOutputTokens, output_tokens: outputTokens ?? null, tail_repetition: tailRepetition });
                 },
                 onFallback: ({ reason, fromProvider, toProvider }) => {
-                  if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
+                  if (new WorkerStore(db).excluded(session_id)) throw new CompactionSourceChangedError();
               settleAttempt(false); // the abandoned attempt was charged but answered nothing usable
                   // The next attempt is the fallback's, even when it reports no usage.
                   attemptAnswering.add(toProvider);
@@ -738,7 +738,9 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                   ctx.onUsage?.(usage);
                 },
               })));
-              if (new WorkerStore(db).excluded(session_id)) throw new Error("Worker session excluded during compaction");
+              // A worker gate that excluded (and maybe purged) the session meanwhile ends the
+              // run as a changed source does: earlier passes stand, this answer is not stored.
+              if (new WorkerStore(db).excluded(session_id)) throw new CompactionSourceChangedError();
               // The engine gates every answer too; judging it here as well keeps an answer
               // the engine will reject from being counted as a successful call.
               controller.signal.throwIfAborted();
@@ -764,6 +766,14 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             force: true,
             previousSummaryContent: validatedPreviousSummary,
           });
+          if (compactResult.sourceChanged) {
+            log.write("info", "compact.source_changed", { cwd, session_id, summaries: compactResult.createdSummaryIds?.length ?? 0 });
+            // An excluded session's context is never rendered, whatever the run published first.
+            if (new WorkerStore(db).excluded(session_id)) return {
+              summary: "", replayOutcome: "skipped", reason: "worker-excluded",
+              ...(captureRequired ? { captureOutcome, summaryOutcome: { status: "skipped" as const, reason: "worker-excluded" } } : {}),
+            };
+          }
 
           // Gather stats for the compaction message (always, regardless of actionTaken)
           const allSummaries = await summaryStore.getSummariesByConversation(conversation.conversationId);
@@ -791,7 +801,7 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
                 maxDepth,
                 promotedCount,
               })
-            : "No compaction needed.";
+            : compactResult.sourceChanged ? "Compaction stopped: the session changed while it was summarized." : "No compaction needed.";
 
           let latestSummaryContent: string | undefined;
           let latestSummaryId: string | undefined;
@@ -820,6 +830,10 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             ? providerLabel
             : (sessionSummaryProviderLabel(answeredProvider) ?? providerLabels[answeredProvider as EffectiveProvider] ?? answeredProvider);
           if (llmUsage.calls > 0) llmUsage.provider = answeredProvider;
+          // A run a changed source stopped is not done, so replay retries it either way.
+          const replayOutcome = compactResult.sourceChanged
+            ? compactResult.actionTaken ? "partial" : "skipped"
+            : compactResult.actionTaken ? "compacted" : "no_work";
 
           return {
             summary: summaryMsg,
@@ -827,14 +841,15 @@ export function createCompactHandler(config: DaemonConfig, paths: LcmPaths, jobs
             latestSummaryContent,
             latestSummaryId,
             latestSummaryIds,
-            replayOutcome: compactResult.actionTaken ? "compacted" : "no_work",
+            replayOutcome,
+            ...(compactResult.sourceChanged ? { reason: "source-changed" } : {}),
             tokensBefore: compactResult.tokensBefore,
             tokensAfter: compactResult.tokensAfter,
             providerId: answeredProvider,
             providerLabel: answeredLabel,
             ...(captureRequired ? {
               captureOutcome,
-              summaryOutcome: { status: compactResult.actionTaken ? "completed" : "skipped", reason: compactResult.actionTaken ? undefined : structuredInput ? "structured-no-work" : "no-work" },
+              summaryOutcome: { status: compactResult.actionTaken ? "completed" : "skipped", reason: compactResult.sourceChanged ? "source-changed" : compactResult.actionTaken ? undefined : structuredInput ? "structured-no-work" : "no-work" },
             } : {}),
             ...(llmUsage.calls > 0 ? { llmUsage } : {}),
           };

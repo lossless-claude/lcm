@@ -5,6 +5,8 @@ import { runLcmMigrations } from "../src/db/migration.js";
 import { ConversationStore } from "../src/store/conversation-store.js";
 import { SummaryStore } from "../src/store/summary-store.js";
 import * as projectQueue from "../src/daemon/project-queue.js";
+import { clearConversationForRebuild } from "../src/claude-rebuild.js";
+import { countContextCoverage } from "../src/store/context-coverage.js";
 
 const dbs: DatabaseSync[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
@@ -142,7 +144,115 @@ it("counts only new captures after sparse ordinals and protects the fresh tail",
     .toEqual([50, 51, 51, 51]);
   expect(leafSources).toEqual([[0, 1], [2, 3], [4]]);
   expect(result).toMatchObject({ tokensBefore: 180, tokensAfter: 38, condensed: true });
+  // An append lands past the chunk's range, so it is not a changed source.
+  expect(result.sourceChanged).toBeUndefined();
   expect(await summaries.getContextTokenCount(conversationId)).toBe(38);
   expect((await summaries.getContextItems(conversationId)).filter(item => item.itemType === "message").map(item => item.messageId))
     .toContain(messages[5].messageId);
+  // Six seeded messages and the appended one, each covered once by the context.
+  expect(countContextCoverage(db, conversationId).map(row => row.coverage)).toEqual(Array(7).fill(1));
+});
+
+it("discards a pass whose source a writer cleared while the model ran, leaving no summary or index row", async () => {
+  const discarded = vi.fn();
+  const { db, conversationId, compact } = await fixture(6, { leafChunkTokens: 60, onAnswerDiscarded: discarded }, 30);
+  const result = await compact(async () => {
+    // A worker purge's clear, by a writer that skips the session's compaction guard.
+    db.exec("BEGIN");
+    clearConversationForRebuild(db, conversationId, "compaction-yield");
+    db.exec("COMMIT");
+    return "s".repeat(40);
+  });
+  expect(result).toMatchObject({ actionTaken: false, sourceChanged: true, createdSummaryIds: [], tokensAfter: 0 });
+  expect(discarded).toHaveBeenCalledTimes(1);
+  expect(db.prepare("SELECT COUNT(*) AS n FROM summaries").get()).toEqual({ n: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS n FROM summaries_fts").get()).toEqual({ n: 0 });
+});
+
+it("keeps earlier passes and stops when another writer replaced part of a chunk while the model ran", async () => {
+  const discarded = vi.fn();
+  const { db, summaries, conversationId, messages, compact } = await fixture(6, { leafChunkTokens: 60, onAnswerDiscarded: discarded }, 30);
+  let calls = 0;
+  const result = await compact(async () => {
+    if (++calls === 2) {
+      // The second chunk is ordinals 2-3; this writer summarizes 3-4 meanwhile.
+      await summaries.insertSummary({ summaryId: "overlap", conversationId, kind: "leaf", depth: 0, content: "overlap", tokenCount: 1 });
+      await summaries.linkSummaryToMessages("overlap", [messages[3].messageId, messages[4].messageId]);
+      await summaries.replaceContextRangeWithSummary({ conversationId, startOrdinal: 3, endOrdinal: 4, summaryId: "overlap" });
+    }
+    return "s".repeat(40);
+  });
+  expect(calls).toBe(2);
+  expect(result).toMatchObject({ actionTaken: true, sourceChanged: true, condensed: false });
+  expect(result.createdSummaryIds).toHaveLength(1);
+  expect(discarded).toHaveBeenCalledTimes(1);
+  expect((await summaries.getContextItems(conversationId)).map(item => item.summaryId ?? item.messageId))
+    .toEqual([result.createdSummaryId, messages[2].messageId, "overlap", messages[5].messageId]);
+  expect(countContextCoverage(db, conversationId).map(row => row.coverage)).toEqual(Array(6).fill(1));
+  expect(summaries.getOrphanSummaryIds()).toEqual([]);
+});
+
+it("stops before condensing when a later leaf pass's source changed", async () => {
+  const { summaries, conversationId, messages, compact } = await fixture(6, { leafChunkTokens: 60, condensedTargetTokens: 1 }, 30);
+  const kinds: string[] = [];
+  const result = await compact(async (_text, _aggressive, options) => {
+    kinds.push(options?.isCondensed ? "condensed" : "leaf");
+    if (kinds.length === 3) {
+      // Two leaf summaries already stand side by side; the third chunk is ordinals 4-5,
+      // and another writer summarizes ordinal 4 meanwhile.
+      await summaries.insertSummary({ summaryId: "overlap", conversationId, kind: "leaf", depth: 0, content: "overlap", tokenCount: 1 });
+      await summaries.linkSummaryToMessages("overlap", [messages[4].messageId]);
+      await summaries.replaceContextRangeWithSummary({ conversationId, startOrdinal: 4, endOrdinal: 4, summaryId: "overlap" });
+    }
+    return options?.isCondensed ? "done" : "s".repeat(40);
+  });
+  // A condensed pass now would spend another model call after a discarded one.
+  expect(kinds).toEqual(["leaf", "leaf", "leaf"]);
+  expect(result).toMatchObject({ actionTaken: true, condensed: false, sourceChanged: true });
+  expect(result.createdSummaryIds).toHaveLength(2);
+});
+
+it("discards a condensed pass whose source a writer cleared while the model ran", async () => {
+  const discarded = vi.fn();
+  const { db, summaries, conversationId, compact } = await fixture(6, {
+    leafChunkTokens: 60, condensedTargetTokens: 1, onAnswerDiscarded: discarded,
+  }, 30);
+  let condensedCalls = 0;
+  const result = await compact(async (_text, _aggressive, options) => {
+    if (options?.isCondensed && ++condensedCalls === 1) {
+      db.exec("BEGIN");
+      clearConversationForRebuild(db, conversationId, "compaction-yield");
+      db.exec("COMMIT");
+    }
+    return options?.isCondensed ? "done" : "s".repeat(40);
+  });
+  expect(condensedCalls).toBe(1);
+  expect(result).toMatchObject({ actionTaken: true, condensed: false, sourceChanged: true, tokensAfter: 0 });
+  expect(result.createdSummaryIds).toHaveLength(3);
+  expect(discarded).toHaveBeenCalledTimes(1);
+  expect(summaries.getOrphanSummaryIds()).toEqual([]);
+  expect(db.prepare("SELECT COUNT(*) AS n FROM summaries").get()).toEqual({ n: 0 });
+  expect(db.prepare("SELECT COUNT(*) AS n FROM summaries_fts").get()).toEqual({ n: 0 });
+});
+
+it("discards a condensed pass when another writer swapped one of its summaries at the same ordinal", async () => {
+  const { db, summaries, conversationId, messages, compact } = await fixture(6, { leafChunkTokens: 60, condensedTargetTokens: 1 }, 30);
+  let condensedCalls = 0;
+  const result = await compact(async (_text, _aggressive, options) => {
+    if (options?.isCondensed && ++condensedCalls === 1) {
+      // The first leaf summary, of messages 0-1, sits at ordinal 0. Its replacement has the
+      // same ordinal and item type and no message id: only the summary id tells them apart.
+      await summaries.insertSummary({ summaryId: "swapped", conversationId, kind: "leaf", depth: 0, content: "swapped", tokenCount: 1 });
+      await summaries.linkSummaryToMessages("swapped", [messages[0].messageId, messages[1].messageId]);
+      await summaries.replaceContextRangeWithSummary({ conversationId, startOrdinal: 0, endOrdinal: 0, summaryId: "swapped" });
+    }
+    return options?.isCondensed ? "done" : "s".repeat(40);
+  });
+  expect(condensedCalls).toBe(1);
+  expect(result).toMatchObject({ actionTaken: true, condensed: false, sourceChanged: true });
+  expect(result.createdSummaryIds).toHaveLength(3);
+  const [, secondLeaf, thirdLeaf] = result.createdSummaryIds ?? [];
+  expect((await summaries.getContextItems(conversationId)).map(item => item.summaryId))
+    .toEqual(["swapped", secondLeaf, thirdLeaf]);
+  expect(countContextCoverage(db, conversationId).map(row => row.coverage)).toEqual(Array(6).fill(1));
 });
