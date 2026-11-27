@@ -20,6 +20,7 @@ vi.mock("../../../src/transcript.js", async (importOriginal) => {
   return { ...actual, parseTranscript: vi.fn(actual.parseTranscript) };
 });
 import { parseTranscript } from "../../../src/transcript.js";
+import { stubUserHome } from "../../helpers/user-home.js";
 
 const tempDirs: string[] = [];
 
@@ -52,11 +53,11 @@ describe("POST /ingest discovers subagent transcripts (#434)", () => {
     tempDirs.push(tempHome);
     cwd = realpathSync(mkdtempSync(join(tmpdir(), "lossless-subagent-cwd-")));
     tempDirs.push(cwd);
-    vi.stubEnv("HOME", tempHome);
+    stubUserHome(tempHome);
 
     const sessionId = "parent-session";
-    // claudeTranscriptPath reads HOME at call time via node:os homedir(), which
-    // respects the stubbed env var above.
+    // claudeTranscriptPath reads the home at call time via node:os homedir(), which
+    // respects the stubbed env vars above.
     const parentTranscriptPath = claudeTranscriptPath(cwd, sessionId)!;
     writeTranscript(parentTranscriptPath, [entry("user", "hi"), entry("assistant", "hello")]);
     const subagentsDir = join(dirname(parentTranscriptPath), sessionId, "subagents");

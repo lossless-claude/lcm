@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHarness, openProjectDb, type HarnessHandle } from "../harness.js";
 import { LEARNING_INSTRUCTION_CLI } from "../../../src/guidance.js";
+import { childEnvWithHome } from "../../helpers/user-home.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const cli = join(root, "dist/bin/lcm.js");
@@ -27,8 +28,7 @@ function runHook(event: string, extra: Record<string, unknown> = {}) {
       cwd: harness.tmpDir,
       // LCM_HOME as well as HOME: the suite sets one per test file, and it would win here.
       env: {
-        ...process.env,
-        HOME: fakeHome,
+        ...childEnvWithHome(fakeHome),
         LCM_HOME: join(fakeHome, ".lossless-claude"),
         CLAUDE_PROJECT_DIR: undefined,
       },

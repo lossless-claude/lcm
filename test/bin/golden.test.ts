@@ -25,6 +25,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GOLDEN_CASES, type GoldenCase } from "./golden/cases.js";
 import { runCli } from "./golden/run-cli.mjs";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(__dirname, "..", "..");
@@ -108,15 +109,14 @@ function makeRoot(): string {
 
 function buildEnv(root: string): NodeJS.ProcessEnv {
   const scratchDir = join(root, "tmp");
-  return {
+  return childEnvWithHome(join(root, "home"), {
     PATH: process.env.PATH ?? "",
-    HOME: join(root, "home"),
     LCM_HOME: join(root, "lcm"),
     TMPDIR: scratchDir,
     TMP: scratchDir,
     TEMP: scratchDir,
     NO_COLOR: "1",
-  };
+  });
 }
 
 // ─── filesystem delta guard ───────────────────────────────────────────────────

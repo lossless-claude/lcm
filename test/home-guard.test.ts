@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createLcmPaths } from "../src/lcm-paths.js";
 import { lcmHome } from "../src/lcm-home.js";
+import { childEnvWithHome } from "./helpers/user-home.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -41,7 +42,7 @@ it("refuses the real lcm home even when LCM_HOME or HOME selects it", () => {
     createLcmPaths(lcmHome());`;
   for (const override of [realHome, ""]) {
     expect(() => execFileSync(process.execPath, ["--input-type=module", "-e", script], {
-      cwd: resolve("."), env: { ...process.env, HOME: userHome, USERPROFILE: userHome, LCM_HOME: override }, stdio: "pipe",
+      cwd: resolve("."), env: { ...childEnvWithHome(userHome), LCM_HOME: override }, stdio: "pipe",
     })).toThrow("refused the real lcm home");
   }
 });

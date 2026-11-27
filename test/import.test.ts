@@ -9,6 +9,7 @@ import type { DaemonClient } from "../src/daemon/client.js";
 import { runLcmMigrations } from "../src/db/migration.js";
 import { claudeProjectSlug, projectId } from "../src/daemon/project.js";
 import { clearReplayState } from "../src/replay-resume.js";
+import { stubUserHome } from "./helpers/user-home.js";
 
 // --- claudeProjectSlug ---
 
@@ -1932,7 +1933,7 @@ describe("importSessions — provider: omp", () => {
 
   it("ingests a session id held by two OMP roots once and reports the skipped copy", async () => {
     const home = makeTmpDir();
-    vi.stubEnv("HOME", home);
+    stubUserHome(home);
     vi.stubEnv("PI_CODING_AGENT_DIR", "");
     try {
       const cwd = makeTmpDir();

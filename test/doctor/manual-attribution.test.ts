@@ -11,6 +11,7 @@ import { ensureTimelineOwner, TIMELINE_SESSION_ID } from "../../src/db/project-t
 import { runLcmMigrations } from "../../src/db/migration.js";
 import { PromotedStore } from "../../src/db/promoted.js";
 import { writeHold } from "../../src/daemon/hold.js";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 let root: string;
 let home: string;
@@ -66,7 +67,7 @@ function claude(sessionId: string, text: string, capturedHere = true) {
 
 function command(...args: string[]) {
   return execFileSync(process.execPath, [resolve("dist/bin/lcm.js"), "doctor", "--repair-manual-attribution", ...args], {
-    cwd: resolve("."), env: { ...process.env, LCM_HOME: home, HOME: userHome }, encoding: "utf8", timeout: 15_000, stdio: "pipe",
+    cwd: resolve("."), env: { ...childEnvWithHome(userHome), LCM_HOME: home }, encoding: "utf8", timeout: 15_000, stdio: "pipe",
   });
 }
 

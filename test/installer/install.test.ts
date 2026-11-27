@@ -10,6 +10,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { stubUserHome } from "../helpers/user-home.js";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -241,10 +242,7 @@ describe("install --dry-run in a home that has never seen lcm", () => {
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const home = mkdtempSync(join(tmpdir(), "lcm-install-dry-run-"));
-    const previousHome = process.env.HOME;
-    const previousProfile = process.env.USERPROFILE;
-    process.env.HOME = home;
-    process.env.USERPROFILE = home;
+    stubUserHome(home);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -253,8 +251,7 @@ describe("install --dry-run in a home that has never seen lcm", () => {
       expect(lines.some((s: string) => s.includes("[dry-run] would write:") && s.endsWith(join("skills", "memory", "SKILL.md")))).toBe(true);
       expect(readdirSync(home)).toEqual([]);
     } finally {
-      process.env.HOME = previousHome;
-      process.env.USERPROFILE = previousProfile;
+      vi.unstubAllEnvs();
       rmSync(home, { recursive: true, force: true });
     }
   });
@@ -266,10 +263,7 @@ describe("install with DryRunServiceDeps", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fakeHome = mkdtempSync(join(tmpdir(), "lcm-install-dry-"));
-    const originalHome = process.env.HOME;
-    const originalProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
+    stubUserHome(fakeHome);
 
     try {
       const outcome = await install(new DryRunServiceDeps());
@@ -286,8 +280,7 @@ describe("install with DryRunServiceDeps", () => {
       expect(outcome.codex.status).toBe("ok");
       expect(outcome.omp.status).toBe("ok");
     } finally {
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalProfile;
+      vi.unstubAllEnvs();
       rmSync(fakeHome, { recursive: true, force: true });
       logSpy.mockRestore();
       warnSpy.mockRestore();
@@ -299,10 +292,7 @@ describe("install — plugin cache cleanup", () => {
   it("removes only older, unregistered cache versions", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const fakeHome = mkdtempSync(join(tmpdir(), "lcm-install-cache-"));
-    const originalHome = process.env.HOME;
-    const originalProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
+    stubUserHome(fakeHome);
     try {
       const home = join(fakeHome, ".claude", "plugins", "cache", "lossless-claude", "lcm");
       for (const v of ["0.1.0", "0.2.0", "99.0.0"]) mkdirSync(join(home, v), { recursive: true });
@@ -315,8 +305,7 @@ describe("install — plugin cache cleanup", () => {
       const removed = (deps.rmSync as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[0]);
       expect(removed).toEqual([join(home, "0.1.0")]); // 0.2.0 is registered, 99.0.0 is newer
     } finally {
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalProfile;
+      vi.unstubAllEnvs();
       rmSync(fakeHome, { recursive: true, force: true });
       vi.mocked(console.log).mockRestore();
     }
@@ -357,10 +346,7 @@ describe("install — Codex", () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "lcm-install-codex-"));
     mkdirSync(join(fakeHome, ".codex"), { recursive: true });
     writeFileSync(join(fakeHome, ".codex", "hooks.json"), "{not json");
-    const originalHome = process.env.HOME;
-    const originalProfile = process.env.USERPROFILE;
-    process.env.HOME = fakeHome;
-    process.env.USERPROFILE = fakeHome;
+    stubUserHome(fakeHome);
     try {
       const deps = makeDeps({
         spawnSync: codexFound,
@@ -372,8 +358,7 @@ describe("install — Codex", () => {
       expect(outcome.codex.status).toBe("failed");
       expect(outcome.codex.detail).toContain("not valid JSON");
     } finally {
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalProfile;
+      vi.unstubAllEnvs();
       rmSync(fakeHome, { recursive: true, force: true });
       vi.mocked(console.log).mockRestore();
     }

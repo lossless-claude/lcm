@@ -3,6 +3,7 @@ import { removeClaudeSettings, teardownDaemonService, uninstall, type TeardownDe
 import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { stubUserHome } from "../helpers/user-home.js";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -211,8 +212,7 @@ describe("uninstall with DryRunServiceDeps", () => {
     const settings = JSON.stringify({ mcpServers: { lcm: {} } });
     mkdirSync(join(fixtureHome, ".claude"));
     writeFileSync(settingsPath, settings);
-    vi.stubEnv("HOME", fixtureHome);
-    vi.stubEnv("USERPROFILE", fixtureHome);
+    stubUserHome(fixtureHome);
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 

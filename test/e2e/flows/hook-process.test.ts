@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHarness, openProjectDb, type HarnessHandle } from "../harness.js";
+import { childEnvWithHome } from "../../helpers/user-home.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..", "..");
@@ -45,8 +46,7 @@ function runHook(args: readonly string[], stdin: string): Promise<HookRun> {
       // LCM_HOME, not just HOME: the suite sets one per test file, and it would otherwise
       // be inherited here and win over the fake home this flow set up.
       env: {
-        ...process.env,
-        HOME: fakeHome,
+        ...childEnvWithHome(fakeHome),
         LCM_HOME: join(fakeHome, ".lossless-claude"),
         CLAUDE_PROJECT_DIR: undefined,
       },

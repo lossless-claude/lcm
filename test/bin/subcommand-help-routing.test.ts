@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 /**
  * Rebuilds the shape the `daemon` and `connectors` trees have in bin/lcm.ts:
@@ -65,7 +66,7 @@ describe("built CLI help routing", () => {
     try {
       const result = spawnSync(process.execPath, [cli, ...args], {
         cwd: directory,
-        env: { ...process.env, HOME: directory, LCM_HOME: join(directory, "lcm") },
+        env: { ...childEnvWithHome(directory), LCM_HOME: join(directory, "lcm") },
         encoding: "utf8",
         timeout: 10000,
       });

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { writeHold } from "../../src/daemon/hold.js";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 const execute = promisify(execFile);
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -31,7 +32,7 @@ it("held compact refuses admission without migrating project databases", async (
   const before = readFileSync(dbPath);
   try {
     await expect(execute(process.execPath, [resolve("dist/bin/lcm.js"), "compact", "--all"], {
-      cwd: root, env: { ...process.env, HOME: root, LCM_HOME: root }, timeout: 10000,
+      cwd: root, env: { ...childEnvWithHome(root), LCM_HOME: root }, timeout: 10000,
     })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining("held down until") });
     expect(readFileSync(dbPath)).toEqual(before);
     expect(existsSync(join(root, "tmp")) && readdirSync(join(root, "tmp")).some((name) => name.startsWith("daemon.starting."))).toBe(false);
@@ -64,7 +65,7 @@ it("held stop waits for admitted compact local migrations until the CLI exits", 
     };
     syncBuiltinESMExports();
   `);
-  const env = { ...process.env, HOME: root, LCM_HOME: root };
+  const env = { ...childEnvWithHome(root), LCM_HOME: root };
   const cli = resolve("dist/bin/lcm.js");
   const compact = execute(process.execPath, ["--import", pathToFileURL(preload).href, cli, "compact", "--all", "--no-promote"], { cwd: root, env, timeout: 15000 });
   void compact.catch(() => {});

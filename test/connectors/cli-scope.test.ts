@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerConnectorsCommands } from "../../src/cli/connectors.js";
+import { stubUserHome } from "../helpers/user-home.js";
 
 vi.mock("../../src/hooks/fail-open.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/hooks/fail-open.js")>()),
@@ -13,11 +14,11 @@ vi.mock("../../src/hooks/fail-open.js", async (importOriginal) => ({
 // `lcm connectors` run from a project whose root is the home directory: only --global reaches <agentDir>.
 let home: string;
 let log: string[];
-const saved = { HOME: process.env.HOME, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR };
+const saved = { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR };
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "lcm-cli-scope-"));
-  process.env.HOME = home;
+  stubUserHome(home);
   process.env.PI_CODING_AGENT_DIR = join(home, "agent");
   vi.spyOn(process, "cwd").mockReturnValue(home);
   log = [];
@@ -26,6 +27,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;

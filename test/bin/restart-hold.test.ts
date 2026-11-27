@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { readHold, writeHold } from "../../src/daemon/hold.js";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 const execute = promisify(execFile);
 let root: string, preload: string, pidPath: string;
@@ -25,7 +26,7 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 const restart = (...args: string[]) => execute(process.execPath,
   ["--import", pathToFileURL(preload).href, resolve("dist/bin/lcm.js"), "daemon", "restart", ...args], {
-    env: { ...process.env, HOME: root, LCM_HOME: root }, timeout: 10000,
+    env: { ...childEnvWithHome(root), LCM_HOME: root }, timeout: 10000,
   });
 
 it("restart refuses an active hold, reports its owner, reason and expiry, and preserves it", async () => {
@@ -50,7 +51,7 @@ it("restart releases a hold only when --release-hold is explicit", async () => {
 
 it("daemon help documents restart's hold refusal and explicit release", async () => {
   const result = await execute(process.execPath, [resolve("dist/bin/lcm.js"), "help", "daemon"], {
-    env: { ...process.env, HOME: root, LCM_HOME: root }, timeout: 10000,
+    env: { ...childEnvWithHome(root), LCM_HOME: root }, timeout: 10000,
   });
   expect(result.stdout).toContain("--release-hold");
   expect(result.stdout).toContain("restart preserves an active hold");

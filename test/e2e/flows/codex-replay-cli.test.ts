@@ -20,6 +20,7 @@ import { findUncompacted } from "../../../src/batch-compact.js";
 import { claudeProjectSlug, projectDir, projectId } from "../../../src/daemon/project.js";
 import { lcmHome } from "../../../src/lcm-home.js";
 import { createLcmPaths } from "../../../src/lcm-paths.js";
+import { childEnvWithHome } from "../../helpers/user-home.js";
 
 const paths = createLcmPaths(lcmHome());
 
@@ -63,8 +64,7 @@ function runImport(args: string[]): Promise<{ code: number | null; stdout: strin
     const child = spawn(process.execPath, [cli, "import", ...args], {
       cwd: harness.tmpDir,
       env: {
-        ...process.env,
-        HOME: fakeHome,
+        ...childEnvWithHome(fakeHome),
         // The suite sets one LCM_HOME per test file; without this it wins over fakeHome.
         LCM_HOME: join(fakeHome, ".lossless-claude"),
         NO_COLOR: "1",

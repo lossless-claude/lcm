@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubUserHome } from "./helpers/user-home.js";
 import {
   extractOmpArchiveSessionMeta,
   extractOmpArchiveTurnModels,
@@ -486,8 +487,7 @@ describe("ompDiscoveryRoots", () => {
 
   beforeEach(() => {
     fixture = tempDir("lcm-omp-roots-");
-    vi.stubEnv("HOME", fixture);
-    vi.stubEnv("USERPROFILE", fixture);
+    stubUserHome(fixture);
     vi.stubEnv("PI_CODING_AGENT_DIR", "");
   });
 
@@ -532,8 +532,7 @@ describe("findAllOmpTranscripts — profile roots", () => {
 
   beforeEach(() => {
     fixture = tempDir("lcm-omp-profile-scan-");
-    vi.stubEnv("HOME", fixture);
-    vi.stubEnv("USERPROFILE", fixture);
+    stubUserHome(fixture);
     vi.stubEnv("PI_CODING_AGENT_DIR", "");
   });
 

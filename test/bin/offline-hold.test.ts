@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { writeHold } from "../../src/daemon/hold.js";
+import { childEnvWithHome } from "../helpers/user-home.js";
 
 const execute = promisify(execFile);
 const cli = resolve("dist/bin/lcm.js");
@@ -15,7 +16,7 @@ let root: string, dbPath: string, input: string;
 let env: NodeJS.ProcessEnv;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "lcm-offline-hold-"));
-  env = { ...process.env, HOME: root, LCM_HOME: root };
+  env = { ...childEnvWithHome(root), LCM_HOME: root };
   const id = createHash("sha256").update(realpathSync(root)).digest("hex");
   const project = join(root, "projects", id);
   mkdirSync(project, { recursive: true });
