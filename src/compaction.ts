@@ -25,6 +25,20 @@ export interface CompactionResult {
   condensed: boolean;
   /** Escalation level used: "normal" | "aggressive" | "fallback" */
   level?: CompactionLevel;
+  /** A pass's source changed while its model ran: that pass was discarded and the run stopped. */
+  sourceChanged?: boolean;
+}
+
+/**
+ * The model runs with the project mutation lease released, so a writer that skips the
+ * session's compaction guard can change a chunk meanwhile. Publishing over it would cite
+ * rows that are gone or drop that writer's items; the pass is discarded instead.
+ */
+export class CompactionSourceChangedError extends Error {
+  constructor() {
+    super("Compaction source changed while it was summarized");
+    this.name = "CompactionSourceChangedError";
+  }
 }
 
 export interface CompactionConfig {
@@ -50,8 +64,9 @@ export interface CompactionConfig {
   scrubber?: ScrubEngine;
   /**
    * Called when the engine throws away the summarizer's latest answer instead of
-   * persisting it: before asking again aggressively, and before the deterministic
-   * truncation. Lets a caller attribute the stored summary to the answer it came from.
+   * persisting it: before asking again aggressively, before the deterministic
+   * truncation, and once per kept answer of a pass whose source changed. Lets a caller
+   * attribute the stored summary to the answer it came from.
    */
   onAnswerDiscarded?: () => void;
 }
@@ -211,6 +226,14 @@ const CONDENSED_MIN_INPUT_RATIO = 0.1;
 const COMPACTION_YIELD_EVERY = 64;
 const timestampFormatters = new Map<string, Intl.DateTimeFormat>();
 
+/** A pass whose source changed resolves to null; every other failure still rejects. */
+function unlessSourceChanged<T>(pass: Promise<T>): Promise<T | null> {
+  return pass.catch((error: unknown) => {
+    if (error instanceof CompactionSourceChangedError) return null;
+    throw error;
+  });
+}
+
 function dedupeOrderedIds(ids: Iterable<string>): string[] {
   const seen = new Set<string>();
   const ordered: string[] = [];
@@ -279,6 +302,9 @@ export class CompactionEngine {
 
     let actionTaken = false;
     let condensed = false;
+    // A changed source stops the run without a retry: another model call would spend the
+    // caller's budget, and the next trigger takes the backlog.
+    let sourceChanged = false;
     let createdSummaryId: string | undefined;
     const createdSummaryIds: string[] = [];
     let level: CompactionLevel | undefined;
@@ -319,12 +345,16 @@ export class CompactionEngine {
       }
 
       const passTokensBefore = contextTokens;
-      const leafResult = await this.leafPass(
+      const leafResult = await unlessSourceChanged(this.leafPass(
         conversationId,
         leafChunk.items,
         summarize,
         previousSummaryContent,
-      );
+      ));
+      if (!leafResult) {
+        sourceChanged = true;
+        break;
+      }
       const passTokensAfter = await updateTokens(leafResult, leafChunk.items);
       await this.persistCompactionEvents({
         conversationId,
@@ -348,7 +378,7 @@ export class CompactionEngine {
     }
 
     // Phase 2: depth-aware condensed passes, always processing shallowest depth first.
-    while (true) {
+    while (!sourceChanged) {
       await yieldToEventLoop();
       this.config.signal?.throwIfAborted();
       const candidate = await this.selectShallowestCondensationCandidate({
@@ -359,12 +389,16 @@ export class CompactionEngine {
       }
 
       const passTokensBefore = contextTokens;
-      const condenseResult = await this.condensedPass(
+      const condenseResult = await unlessSourceChanged(this.condensedPass(
         conversationId,
         candidate.chunk.items,
         candidate.targetDepth,
         summarize,
-      );
+      ));
+      if (!condenseResult) {
+        sourceChanged = true;
+        break;
+      }
       const passTokensAfter = await updateTokens(condenseResult, candidate.chunk.items);
       await this.persistCompactionEvents({
         conversationId,
@@ -387,7 +421,8 @@ export class CompactionEngine {
       previousTokens = passTokensAfter;
     }
 
-    const tokensAfter = contextTokens;
+    // The running total follows appends only; it cannot follow another writer's change.
+    const tokensAfter = sourceChanged ? await this.summaryStore.getContextTokenCount(conversationId) : contextTokens;
 
     return {
       actionTaken,
@@ -397,6 +432,7 @@ export class CompactionEngine {
       createdSummaryIds,
       condensed,
       level,
+      ...(sourceChanged ? { sourceChanged } : {}),
     };
   }
 
@@ -909,6 +945,31 @@ export class CompactionEngine {
     return { content, level: highestLevel(left.level, right.level), keptAnswers };
   }
 
+  /**
+   * Positional compare-and-swap before a pass publishes: the chunk's ordinal range must
+   * still hold exactly the items it was selected as. The daemon releases its mutation
+   * lease only around model calls, so from this check through the replacement no other
+   * in-process writer runs; the paged links need no transaction around them.
+   */
+  private async assertSourceUnchanged(
+    conversationId: number,
+    items: ContextItemRecord[],
+    keptAnswers: number,
+  ): Promise<void> {
+    // Selection walks context items in ordinal order, so the ends bound the range.
+    const current = await this.summaryStore.getContextRange(
+      conversationId, items[0].ordinal, items[items.length - 1].ordinal,
+    );
+    const unchanged = current.length === items.length && current.every((item, index) => {
+      const selected = items[index];
+      return item.ordinal === selected.ordinal && item.itemType === selected.itemType &&
+        item.messageId === selected.messageId && item.summaryId === selected.summaryId;
+    });
+    if (unchanged) return;
+    for (let i = 0; i < keptAnswers; i++) this.config.onAnswerDiscarded?.();
+    throw new CompactionSourceChangedError();
+  }
+
   // ── Private: Leaf Pass ───────────────────────────────────────────────────
 
   /**
@@ -964,6 +1025,7 @@ export class CompactionEngine {
 
     // Persist the leaf summary
     this.config.signal?.throwIfAborted();
+    await this.assertSourceUnchanged(conversationId, messageItems, summary.keptAnswers);
     const summaryId = generateSummaryId(summary.content);
     const tokenCount = estimateTokens(summary.content);
     const dated = messageContents.filter(message => message.eventAt);
@@ -1070,6 +1132,7 @@ export class CompactionEngine {
 
     // Persist the condensed summary
     this.config.signal?.throwIfAborted();
+    await this.assertSourceUnchanged(conversationId, summaryItems, condensed.keptAnswers);
     const summaryId = generateSummaryId(condensed.content);
     const tokenCount = estimateTokens(condensed.content);
     const knownBounds = this.summaryStore.getSourceEventTimeBounds(summaryRecords.map(summary => summary.summaryId));

@@ -706,6 +706,17 @@ export class SummaryStore {
     return rows.map(toContextItemRecord);
   }
 
+  /** The items with ordinals in [startOrdinal, endOrdinal], read through the primary key. */
+  async getContextRange(conversationId: number, startOrdinal: number, endOrdinal: number): Promise<ContextItemRecord[]> {
+    const rows = this.db.prepare(
+      `SELECT conversation_id, ordinal, item_type, message_id, summary_id, created_at
+       FROM context_items
+       WHERE conversation_id = ? AND ordinal BETWEEN ? AND ?
+       ORDER BY ordinal`,
+    ).all(conversationId, startOrdinal, endOrdinal) as unknown as ContextItemRow[];
+    return rows.map(toContextItemRecord);
+  }
+
   /**
    * The end of the context as a restore replays it: the last `limit`
    * summaries and the last `limit` user/assistant messages among the context

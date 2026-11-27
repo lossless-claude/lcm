@@ -64,7 +64,11 @@ import { scheduleProjectLanguageDetection } from "../../../src/daemon/project-la
 import { createCompactHandler, buildCompactionMessage, markCompacting } from "../../../src/daemon/routes/compact.js";
 import { createIngestHandler } from "../../../src/daemon/routes/ingest.js";
 import { createReplayResetHandler } from "../../../src/daemon/routes/replay-reset.js";
-import { enqueue } from "../../../src/daemon/project-queue.js";
+import { enqueue, withProjectMutation } from "../../../src/daemon/project-queue.js";
+import { WorkerStore } from "../../../src/store/worker-store.js";
+import { clearConversationForRebuild } from "../../../src/claude-rebuild.js";
+import { countContextCoverage } from "../../../src/store/context-coverage.js";
+import { noopDaemonLog } from "../../../src/daemon/log.js";
 import type { DaemonConfig } from "../../../src/daemon/config.js";
 
 function mockRes() {
@@ -336,6 +340,10 @@ describe("required pre-compaction capture", () => {
       await compacting;
     }
     expect(await readMessageContents(cwd, "live-summary")).toContain("new tail while LLM waits");
+    expect(first.getBody().replayOutcome).toBe("compacted");
+    // The replacement kept the tail appended while the model ran, and covers each message once.
+    expect(await readContextMessageContents(cwd, "live-summary")).toContain("new tail while LLM waits");
+    expect(await readCoverageCounts(cwd, "live-summary")).toEqual(Array(21).fill(1));
   }, 10_000);
 
   it("admits another session's PreCompact while a summary waits, but skips the same session", async () => {
@@ -530,6 +538,179 @@ describe("required pre-compaction capture", () => {
     expect(compact.getBody().replayOutcome).toBe("compacted");
     expect(rebuild.getBody()).toMatchObject({ rebuild: { kind: "repairable" } });
     expect(await readMessageContents(cwd, "rebuilt-session")).toContain("skipped by the stored history");
+    expect(await readCoverageCounts(cwd, "rebuilt-session")).toEqual(Array(21).fill(1));
+  }, 10_000);
+
+  // Capture's worker gate, for a discovered descendant: excludes the session, then clears it.
+  const purgeWorker = (db: DatabaseSync, cwd: string) => new WorkerStore(db).exclude("changed-source", cwd, "claude", true);
+  it.each([
+    ["a worker purge", purgeWorker, "worker-excluded", false],
+    // The same clear by a writer that installs no exclusion and skips the session guard.
+    ["an unguarded clear", (db: DatabaseSync) => {
+      const { conversation_id } = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = 'changed-source'").get() as { conversation_id: number };
+      clearConversationForRebuild(db, conversation_id, "changed-source");
+    }, "source-changed", false],
+    // The call fails meanwhile, so the check before the fallback endpoint is the one that sees it.
+    ["a worker purge before a fallback", purgeWorker, "worker-excluded", true],
+  ])("answers %s during a waiting summary without a 500 or an orphan summary", async (_writer, change, reason, failsOver) => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-changed-source-"));
+    dirs.push(cwd);
+    const seed = mockRes();
+    await createIngestHandler(makeConfig("disabled"), paths)({} as any, seed.res, JSON.stringify({
+      session_id: "changed-source", cwd, messages: Array.from({ length: 20 }, (_, index) => ({
+        role: index % 2 ? "assistant" : "user", content: `message ${index} ${"content for compaction ".repeat(100)}`, tokenCount: 600,
+      })),
+    }));
+    expect(seed.getBody()).toMatchObject({ ingested: 20 });
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      // A failure the provider chain hands to the next endpoint.
+      if (failsOver) throw Object.assign(new Error("invalid api key"), { status: 401 });
+      return "summary";
+    });
+    vi.mocked(createAnthropicSummarizer).mockClear();
+    const flat = makeConfig("openai");
+    const config: DaemonConfig = failsOver ? { ...flat, llm: { ...flat.llm, fallback: ["anthropic"], providers: {
+      openai: { type: "openai", model: "test-model", baseURL: flat.llm.baseURL },
+      anthropic: { type: "anthropic", model: "test-model" },
+    } } } : flat;
+    const events: string[] = [];
+    const log = { ...noopDaemonLog, write: (_level: string, event: string) => { events.push(event); } };
+    const compact = mockRes();
+    const compacting = createCompactHandler(config, paths, undefined, log)({} as any, compact.res, JSON.stringify({
+      session_id: "changed-source", cwd, skip_ingest: true,
+    }));
+    try {
+      await entered.promise;
+      // The writer takes the mutation lease the summary yielded for its model call.
+      await withProjectMutation(projectId(cwd), async () => {
+        const db = new DatabaseSync(projectDbPath(cwd, paths));
+        try {
+          db.exec("BEGIN IMMEDIATE");
+          change(db, cwd);
+          db.exec("COMMIT");
+        } finally { db.close(); }
+      });
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+    expect(compact.res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(compact.getBody()).toMatchObject({ replayOutcome: "skipped", reason });
+    expect(events).toContain("compact.source_changed");
+    expect(events).not.toContain("compact.failed");
+    // No endpoint is called for a session a worker gate excluded.
+    expect(createAnthropicSummarizer).not.toHaveBeenCalled();
+    const db = new DatabaseSync(projectDbPath(cwd, paths));
+    try {
+      expect(new SummaryStore(db).getOrphanSummaryIds()).toEqual([]);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM summaries").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM summaries_fts").get()).toEqual({ n: 0 });
+    } finally { db.close(); }
+  }, 10_000);
+
+  it("reports a source changed during a PreCompact summary as a skipped summary", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-changed-capture-"));
+    dirs.push(cwd);
+    const transcriptPath = join(cwd, "changed-capture.jsonl");
+    writeFileSync(transcriptPath, Array.from({ length: 20 }, (_line, index) => JSON.stringify({
+      message: { role: index % 2 ? "assistant" : "user", content: `message ${index} ${"content for compaction ".repeat(100)}` },
+    })).join("\n") + "\n");
+    const entered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+      return "summary";
+    });
+    const summaryOutcomes: unknown[] = [];
+    const log = { ...noopDaemonLog, write: (_level: string, event: string, fields?: Record<string, unknown>) => {
+      if (event === "precompact.summary") summaryOutcomes.push(fields);
+    } };
+    const compact = mockRes();
+    const compacting = createCompactHandler(makeConfig("openai"), paths, undefined, log)({} as any, compact.res, JSON.stringify({
+      session_id: "changed-capture", cwd, transcript_path: transcriptPath, capture_required: true,
+    }));
+    try {
+      await entered.promise;
+      await withProjectMutation(projectId(cwd), async () => {
+        const db = new DatabaseSync(projectDbPath(cwd, paths));
+        try {
+          const { conversation_id } = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = 'changed-capture'").get() as { conversation_id: number };
+          db.exec("BEGIN IMMEDIATE");
+          clearConversationForRebuild(db, conversation_id, "changed-capture");
+          db.exec("COMMIT");
+        } finally { db.close(); }
+      });
+    } finally {
+      resume.resolve();
+      await compacting;
+    }
+    expect(compact.res.writeHead).toHaveBeenCalledWith(200, expect.anything());
+    expect(compact.getBody()).toMatchObject({
+      summary: "Compaction stopped: the session changed while it was summarized.",
+      replayOutcome: "skipped",
+      reason: "source-changed",
+      captureOutcome: { status: "completed", messages: 20 },
+      summaryOutcome: { status: "skipped", reason: "source-changed" },
+    });
+    expect(summaryOutcomes).toEqual([expect.objectContaining({ status: "skipped", reason: "source-changed" })]);
+  }, 10_000);
+
+  it("answers partial with the published pass when a later pass's range changes during its summary", async () => {
+    // Two 600-token messages per leaf chunk, so the run makes several passes.
+    vi.stubEnv("LCM_LEAF_CHUNK_TOKENS", "1200");
+    const cwd = mkdtempSync(join(tmpdir(), "lcm-partial-source-"));
+    dirs.push(cwd);
+    const seed = mockRes();
+    await createIngestHandler(makeConfig("disabled"), paths)({} as any, seed.res, JSON.stringify({
+      session_id: "partial-source", cwd, messages: Array.from({ length: 20 }, (_, index) => ({
+        role: index % 2 ? "assistant" : "user", content: `message ${index} ${"content for compaction ".repeat(100)}`, tokenCount: 600,
+      })),
+    }));
+    const secondEntered = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let calls = 0;
+    vi.mocked(createOpenAISummarizer).mockReturnValueOnce(async () => {
+      if (++calls === 2) {
+        secondEntered.resolve();
+        await resume.promise;
+      }
+      return "summary";
+    });
+    const events: string[] = [];
+    const log = { ...noopDaemonLog, write: (_level: string, event: string) => { events.push(event); } };
+    const compact = mockRes();
+    const compacting = createCompactHandler(makeConfig("openai"), paths, undefined, log)({} as any, compact.res, JSON.stringify({
+      session_id: "partial-source", cwd, skip_ingest: true,
+    }));
+    try {
+      await secondEntered.promise;
+      // The second chunk starts at ordinal 2; another writer summarizes that message meanwhile.
+      await withProjectMutation(projectId(cwd), async () => {
+        const db = new DatabaseSync(projectDbPath(cwd, paths));
+        try {
+          const summaries = new SummaryStore(db);
+          const { conversation_id: conversationId } = db.prepare("SELECT conversation_id FROM conversations WHERE session_id = 'partial-source'").get() as { conversation_id: number };
+          const { message_id: messageId } = db.prepare("SELECT message_id FROM context_items WHERE conversation_id = ? AND ordinal = 2").get(conversationId) as { message_id: number };
+          await summaries.insertSummary({ summaryId: "overlap", conversationId, kind: "leaf", depth: 0, content: "overlap", tokenCount: 1 });
+          await summaries.linkSummaryToMessages("overlap", [messageId]);
+          await summaries.replaceContextRangeWithSummary({ conversationId, startOrdinal: 2, endOrdinal: 2, summaryId: "overlap" });
+        } finally { db.close(); }
+      });
+    } finally {
+      resume.resolve();
+      await compacting;
+      vi.unstubAllEnvs();
+    }
+    expect(calls).toBe(2);
+    expect(compact.getBody()).toMatchObject({ replayOutcome: "partial", reason: "source-changed" });
+    expect(compact.getBody().latestSummaryIds).toHaveLength(1);
+    expect(events).toContain("compact.source_changed");
+    expect(await readCoverageCounts(cwd, "partial-source")).toEqual(Array(20).fill(1));
   }, 10_000);
 
   it("lets two sessions of one project summarize at the same time", async () => {
@@ -877,6 +1058,16 @@ async function readSummaryCount(cwd: string, sessionId: string): Promise<number>
     const summaryStore = new SummaryStore(db);
     const conversation = await conversationStore.getOrCreateConversation(sessionId);
     return (await summaryStore.getSummariesByConversation(conversation.conversationId)).length;
+  } finally {
+    db.close();
+  }
+}
+
+async function readCoverageCounts(cwd: string, sessionId: string): Promise<number[]> {
+  const db = new DatabaseSync(projectDbPath(cwd, paths));
+  try {
+    const conversation = await new ConversationStore(db).getOrCreateConversation(sessionId);
+    return countContextCoverage(db, conversation.conversationId).map((row) => row.coverage);
   } finally {
     db.close();
   }

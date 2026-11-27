@@ -516,6 +516,17 @@ not change that accounting. Capture can append messages while a model call relea
 the mutation lease; after replacement, the sweep adds only those new context items
 to its running total. Compaction event messages remain outside context.
 
+Before a pass publishes, it reads its chunk's ordinal range back and compares each
+item's ordinal, type and message or summary id with what it selected (a positional
+compare-and-swap). Appends land past the range and pass the check. Any other change,
+such as a worker purge or a writer that skips the session's compaction guard, discards
+the pass before its summary, links or full-text row exist, and stops the run without a
+retry; earlier passes stay. `/compact` logs `compact.source_changed` and answers
+`replayOutcome: "skipped"`, or `"partial"` when earlier passes were published, with
+`reason: "source-changed"`; replay records neither, so it retries the session. When a
+worker gate excluded the session meanwhile, the answer is `skipped` with
+`reason: "worker-excluded"` and no context is rendered.
+
 The engine yields to the event loop between leaf and condensed steps and every 64
 items during selection and source preparation. Source links and transactional
 ordinal resequencing use pages of at most 128 items and yield between pages.
