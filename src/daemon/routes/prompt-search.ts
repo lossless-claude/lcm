@@ -388,10 +388,18 @@ export function createPromptSearchHandler(config: DaemonConfig, paths: LcmPaths)
           }
         : undefined;
 
-      // Log surfacing events (best-effort, never throws)
-      try {
-        if (logSurfacing) logGroupSurfacing(results, ids, session_id ?? null, paths);
-      } catch { /* non-fatal */ }
+      // Surfacing feeds the cooldown and the unused-surfacing penalty, so it is written only
+      // once the answer is handed to the socket: a client that closed the connection first
+      // never showed these hints, and they stay eligible for the next prompt. A client that
+      // stops waiting without closing it (the function-hooks module) still counts as shown.
+      // Best-effort, never throws.
+      if (logSurfacing) {
+        res.once("finish", () => {
+          try {
+            logGroupSurfacing(results, ids, session_id ?? null, paths);
+          } catch { /* non-fatal */ }
+        });
+      }
 
       const context = format === "context" ? buildMemoryContext(hints, ids, projectIds, pivotHint) : null;
       sendJson(res, 200, {
